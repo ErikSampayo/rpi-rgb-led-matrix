@@ -21,6 +21,7 @@ class SquarePygameDisplay(Display):
         ]
         self.clicked: list[tuple[int, int]] = []
         self.keys_pressed: list[int] = []
+        self.keys_held = None   # pygame key state sequence, updated each frame
         self.mouse_pos: tuple[int, int] = (0, 0)   # current grid position of mouse
 
         w = self.WIDTH  * pixel_size
@@ -56,6 +57,8 @@ class SquarePygameDisplay(Display):
     def pump_events(self) -> bool:
         self.clicked.clear()
         self.keys_pressed.clear()
+        # Snapshot all currently held keys
+        self.keys_held = pygame.key.get_pressed()
         # Update mouse pos every frame from current cursor position
         mx, my = pygame.mouse.get_pos()
         self.mouse_pos = (

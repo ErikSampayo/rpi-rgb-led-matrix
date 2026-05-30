@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 from game_square.display.base import Color, BLACK, WHITE
 from game_square.nodes import EnergyNode, PlayerBase, Armory
 from game_square.links import PowerLine, _l_path
-from game_square.agents import Agent, check_collisions
+from game_square.agents import Agent, check_collisions, DirectedAgent
 
 
 def _dim(color: Color, factor: float) -> Color:
@@ -29,11 +29,11 @@ def _dim(color: Color, factor: float) -> Color:
 # Player 2 is yellow (index 2 in PLAYER_COLORS)
 PLAYER_INDICES = [0, 2]   # red, yellow
 
-# Key bindings: (up, down, left, right)
+# Key bindings: (up, down, left, right, agent_mode, link_mode)
 import pygame
 PLAYER_KEYS = [
-    (pygame.K_w, pygame.K_s, pygame.K_a, pygame.K_d),           # red
-    (pygame.K_UP, pygame.K_DOWN, pygame.K_LEFT, pygame.K_RIGHT), # yellow
+    (pygame.K_w, pygame.K_s, pygame.K_a, pygame.K_d, pygame.K_e, pygame.K_f),
+    (pygame.K_UP, pygame.K_DOWN, pygame.K_LEFT, pygame.K_RIGHT, pygame.K_n, pygame.K_m),
 ]
 
 WIRE_STEP_TICKS = 3   # ticks between each pixel step while key held
@@ -57,14 +57,16 @@ class WireBuilder:
         self._cooldown = 0          # ticks until next step allowed
 
     def _node_pixels(self, connectables) -> set[tuple[int,int]]:
-        """All pixels occupied by any node (used for collision)."""
+        """All pixels occupied by any node body (used for collision, excludes connection points)."""
         occupied = set()
         for obj in connectables:
             if isinstance(obj, EnergyNode):
-                # bounding box approximation — just mark centre ±3
-                for dy in range(-3, 4):
-                    for dx in range(-3, 4):
-                        occupied.add((obj.x + dx, obj.y + dy))
+                for dx, dy in obj._casing:
+                    occupied.add((obj.x + dx, obj.y + dy))
+                for dx, dy in obj._fill:
+                    occupied.add((obj.x + dx, obj.y + dy))
+                ndx, ndy = obj._nub
+                occupied.add((obj.x + ndx, obj.y + ndy))
             elif isinstance(obj, PlayerBase):
                 for dx, dy in obj._FRAME + obj._PINS:
                     occupied.add((obj.x + dx, obj.y + dy))
@@ -75,12 +77,36 @@ class WireBuilder:
                 occupied.add((obj.x, obj.y))
         return occupied
 
-    def start(self, connectables) -> None:
-        """Pick a random free CPU pin and begin building."""
-        pins = self.base.connection_points
-        self.path = [random.choice(pins)]
+    def start(self, direction: tuple[int,int], links: list) -> bool:
+        """
+        Pick the CPU pin on the side matching `direction` that isn't already
+        the start of a committed link.  Returns False (do nothing) if both
+        pins on that side are already wired.
+        """
+        # Map direction → pair of _PIN_CONNECTIONS indices
+        # _PIN_CONNECTIONS order: north(0,1), south(2,3), west(4,5), east(6,7)
+        DIR_PINS = {
+            ( 0, -1): (0, 1),   # up    → north pins
+            ( 0,  1): (2, 3),   # down  → south pins
+            (-1,  0): (4, 5),   # left  → west pins
+            ( 1,  0): (6, 7),   # right → east pins
+        }
+        pair = DIR_PINS.get(direction)
+        if pair is None:
+            return False
+
+        all_pins = self.base.connection_points   # list of 8 absolute (x,y)
+        # Find which of the two side-pins aren't already a link source
+        used_starts = {lk.path[0] for lk in links if lk.source is self.base}
+        candidates = [all_pins[i] for i in pair if all_pins[i] not in used_starts]
+        if not candidates:
+            return False   # both pins on this side already wired
+
+        chosen = random.choice(candidates)
+        self.path = [chosen]
         self.active = True
         self._cooldown = 0
+        return True
 
     def step(self, direction: tuple[int,int], links: list, connectables) -> str:
         """
@@ -170,6 +196,8 @@ class WireBuilder:
             lk.source, lk.destination = lk.destination, lk.source
             lk.path = list(reversed(lk.path))
             lk.gated = False
+            # Claim ownership of the battery
+            dest_obj.owner_color = self.base.color
 
         return lk
 
@@ -199,15 +227,17 @@ NODE_MARGIN   = 8   # keep nodes away from edges
 NODE_MIN_DIST = 14  # minimum distance between any two nodes
 
 
-def _random_node_positions(count: int, margin: int, min_dist: int) -> list[tuple[int, int]]:
-    import random
+def _random_node_positions(count: int, margin: int, min_dist: int,
+                            avoid: list[tuple[int,int]] | None = None) -> list[tuple[int, int]]:
     ORIENTATIONS = ('up', 'down', 'left', 'right')
+    avoid = avoid or []
     positions = []
     attempts  = 0
     while len(positions) < count and attempts < 10_000:
         x = random.randint(margin, 63 - margin)
         y = random.randint(margin, 63 - margin)
-        if all(abs(x - px) + abs(y - py) >= min_dist for px, py, _ in positions):
+        existing = [(px, py, _) for px, py, _ in positions] + [(ax, ay, None) for ax, ay in avoid]
+        if all(abs(x - px) + abs(y - py) >= min_dist for px, py, _ in existing):
             positions.append((x, y, random.choice(ORIENTATIONS)))
         attempts += 1
     return positions
@@ -268,74 +298,33 @@ def draw_ripple(display, ripple: Ripple) -> None:
             display.set_pixel(px, py, c)
 
 
-def _place_one_player(display, player: int, nodes: list, already_placed: list, tick_ref: list) -> tuple:
+def auto_placement(nodes: list) -> tuple:
     """
-    Two-step placement for a single player: CPU base then Armory.
-    already_placed: list of (base, armory) tuples for players already placed (drawn as bg).
-    tick_ref: [tick] mutable so tick persists across calls.
-    Returns (PlayerBase, Armory) or (None, None) on quit.
+    Place bases and armories automatically — no mouse needed.
+    Red CPU: top-left corner region.
+    Yellow CPU: bottom-right corner region.
+    Armories: random, kept away from batteries and the other base.
     """
-    ghost_base   = PlayerBase(0, 0, player)
-    ghost_armory = Armory(0, 0, player)
-    placed_base  = None
+    base0 = PlayerBase(10, 10, PLAYER_INDICES[0])
+    base1 = PlayerBase(53, 53, PLAYER_INDICES[1])
 
-    def draw_bg(t):
-        display.clear()
-        for node in nodes:
-            node.draw(display, t)
-        for b, a in already_placed:
-            b.draw(display, t)
-            a.draw(display, t)
+    occupied = [(obj.x, obj.y) for obj in nodes] + [(base0.x, base0.y), (base1.x, base1.y)]
 
-    # Phase 1: place CPU base
-    while placed_base is None:
-        if not display.pump_events():
-            return None, None
-        mx, my = getattr(display, "mouse_pos", (32, 32))
-        ghost_base.x, ghost_base.y = mx, my
-        draw_bg(tick_ref[0])
-        ghost_base.draw(display, tick_ref[0])
-        display.render()
-        tick_ref[0] += 1
-        time.sleep(0.04)
-        for (cx, cy) in getattr(display, "clicked", []):
-            placed_base = PlayerBase(cx, cy, player)
+    def random_armory(player_idx):
+        for _ in range(10_000):
+            x = random.randint(NODE_MARGIN, 63 - NODE_MARGIN)
+            y = random.randint(NODE_MARGIN, 63 - NODE_MARGIN)
+            if all(abs(x - ox) + abs(y - oy) >= NODE_MIN_DIST for ox, oy in occupied):
+                occupied.append((x, y))
+                return Armory(x, y, player_idx)
+        # Fallback if no space found
+        return Armory(32, 32, player_idx)
 
-    # Phase 2: place Armory
-    placed_armory = None
-    while placed_armory is None:
-        if not display.pump_events():
-            return None, None
-        mx, my = getattr(display, "mouse_pos", (32, 32))
-        ghost_armory.x, ghost_armory.y = mx, my
-        draw_bg(tick_ref[0])
-        placed_base.draw(display, tick_ref[0])
-        ghost_armory.draw(display, tick_ref[0])
-        display.render()
-        tick_ref[0] += 1
-        time.sleep(0.04)
-        for (cx, cy) in getattr(display, "clicked", []):
-            placed_armory = Armory(cx, cy, player)
-
-    return placed_base, placed_armory
-
-
-def placement_phase(display, nodes: list) -> tuple:
-    """
-    Sequential placement for both players.
-    Returns ((base0, armory0), (base1, armory1)) or (None, None) on quit.
-    """
-    tick_ref = [0]
-
-    base0, armory0 = _place_one_player(display, PLAYER_INDICES[0], nodes, [], tick_ref)
-    if base0 is None:
-        return None, None
-
-    base1, armory1 = _place_one_player(display, PLAYER_INDICES[1], nodes, [(base0, armory0)], tick_ref)
-    if base1 is None:
-        return None, None
+    armory0 = random_armory(PLAYER_INDICES[0])
+    armory1 = random_armory(PLAYER_INDICES[1])
 
     return (base0, armory0), (base1, armory1)
+
 
 
 def _update_power(links: list, tick: int = 0) -> None:
@@ -376,6 +365,24 @@ def _update_power(links: list, tick: int = 0) -> None:
         if newly_powered:
             link.power_on(tick)
 
+    # Refresh battery ownership: owned by whoever has a powered link to it;
+    # reset to None if no powered link touches the battery.
+    for link in links:
+        if isinstance(link.source, _EN):
+            if link.powered:
+                dest_color = getattr(link.destination, 'color', None) \
+                             or getattr(link.destination, 'owner_color', None)
+                if dest_color:
+                    link.source.owner_color = dest_color
+            else:
+                # Only clear if no other powered link claims this battery
+                claimed = any(
+                    lk.powered and (lk.source is link.source or lk.destination is link.source)
+                    for lk in links if lk is not link
+                )
+                if not claimed:
+                    link.source.owner_color = None
+
 
 PIN_SNAP = 5   # max Manhattan distance to snap to a pin
 
@@ -414,19 +421,18 @@ def demo(display) -> None:
     W, H = display.WIDTH, display.HEIGHT
     tick = 0
 
-    nodes = [EnergyNode(x, y, orientation) for x, y, orientation in _random_node_positions(NODE_COUNT, NODE_MARGIN, NODE_MIN_DIST)]
+    BASE_POSITIONS = [(10, 10), (53, 53)]
+    nodes = [EnergyNode(x, y, orientation) for x, y, orientation in
+             _random_node_positions(NODE_COUNT, NODE_MARGIN, NODE_MIN_DIST, avoid=BASE_POSITIONS)]
 
-    # Placement phase — both players place their base and armory
-    result = placement_phase(display, nodes)
-    if result[0] is None:
-        return
-    (base0, armory0), (base1, armory1) = result
+    (base0, armory0), (base1, armory1) = auto_placement(nodes)
 
     bases   = [base0, base1]
     armories = [armory0, armory1]
 
     links: list[PowerLine] = []
     agents: list[Agent] = []
+    directed: list[DirectedAgent] = []   # player-controlled agents
 
     # One WireBuilder per player, keyed to their base
     wire_builders = [
@@ -434,25 +440,57 @@ def demo(display) -> None:
         WireBuilder(base1, PLAYER_KEYS[1]),
     ]
 
+    # Per-player mode: 'link' or 'agent'
+    player_mode = ['link', 'link']
+    # One active DirectedAgent per player (or None)
+    player_agent: list[DirectedAgent | None] = [None, None]
+
     while True:
         if not display.pump_events():
             break
 
         connectables = nodes + bases + armories
-        keys = getattr(display, 'keys_pressed', [])
+        keys_pressed = getattr(display, 'keys_pressed', [])
+        held = getattr(display, 'keys_held', None)
 
-        # --- Keyboard wire building ---
-        for wb in wire_builders:
-            up, down, left, right = wb.keys
+        # --- Mode toggle (on keydown) ---
+        for i, arm in enumerate(armories):
+            _, _, _, _, k_agent, k_link = PLAYER_KEYS[i]
+            if k_agent in keys_pressed:
+                player_mode[i] = 'agent'
+                if wire_builders[i].active:   # cancel any in-progress wire
+                    wire_builders[i].active = False
+                    wire_builders[i].path = []
+            if k_link in keys_pressed:
+                player_mode[i] = 'link'
+                if player_agent[i] and player_agent[i].alive:
+                    player_agent[i].derezz()
+                player_agent[i] = None
+
+        # --- Build pixel sets for DirectedAgent collision ---
+        link_px_set: set[tuple[int,int]] = set()
+        for lk in links:
+            for px, py in lk.path:
+                link_px_set.add((px, py))
+        node_px_set: set[tuple[int,int]] = set()
+        for wb in wire_builders:   # reuse existing helper via a temp instance
+            node_px_set |= wb._node_pixels(connectables)
+
+        # --- Keyboard wire building (link mode) ---
+        for i, wb in enumerate(wire_builders):
+            if player_mode[i] != 'link':
+                continue
+            up, down, left, right, _, _ = wb.keys
             direction = None
-            if up    in keys: direction = ( 0, -1)
-            elif down  in keys: direction = ( 0,  1)
-            elif left  in keys: direction = (-1,  0)
-            elif right in keys: direction = ( 1,  0)
+            if held is not None:
+                if   held[up]:    direction = ( 0, -1)
+                elif held[down]:  direction = ( 0,  1)
+                elif held[left]:  direction = (-1,  0)
+                elif held[right]: direction = ( 1,  0)
 
             if direction is not None:
                 if not wb.active:
-                    wb.start(connectables)
+                    wb.start(direction, links)
                 elif wb._cooldown <= 0:
                     result = wb.step(direction, links, connectables)
                     if result == 'connected':
@@ -463,12 +501,6 @@ def demo(display) -> None:
                         wb.active = False
                         wb.path = []
                     elif result == 'hit_wire':
-                        # Sever the wire that was hit
-                        hit_px = (wb.path[-1][0] + direction[0],
-                                  wb.path[-1][1] + direction[1])
-                        links = [lk for lk in links
-                                 if hit_px not in lk.path]
-                        _update_power(links, tick)
                         wb.active = False
                         wb.path = []
                     elif result in ('hit_node', 'out_of_bounds'):
@@ -478,6 +510,38 @@ def demo(display) -> None:
                         wb._cooldown = WIRE_STEP_TICKS
             if wb._cooldown > 0:
                 wb._cooldown -= 1
+
+        # --- Agent mode control ---
+        ARM_DIR_TIP = {
+            ( 0, -1): ( 0, -3),
+            ( 0,  1): ( 0,  3),
+            (-1,  0): (-3,  0),
+            ( 1,  0): ( 3,  0),
+        }
+        for i, arm in enumerate(armories):
+            if player_mode[i] != 'agent':
+                continue
+            up, down, left, right, _, _ = PLAYER_KEYS[i]
+            direction = None
+            if held is not None:
+                if   held[up]:    direction = ( 0, -1)
+                elif held[down]:  direction = ( 0,  1)
+                elif held[left]:  direction = (-1,  0)
+                elif held[right]: direction = ( 1,  0)
+
+            pa = player_agent[i]
+            if pa is None or not pa.alive:
+                if direction is not None:
+                    tip = ARM_DIR_TIP[direction]
+                    sx, sy = arm.x + tip[0], arm.y + tip[1]
+                    pa = DirectedAgent(sx, sy, bases[i].color)
+                    pa.steer(direction)
+                    pa._cooldown = DirectedAgent.STEP_TICKS
+                    player_agent[i] = pa
+                    directed.append(pa)
+            else:
+                if direction is not None:
+                    pa.steer(direction)
 
         # --- CPU energy buffering ---
         # Inbound battery→CPU links: count newly arrived pulses and credit the base.
@@ -515,7 +579,20 @@ def demo(display) -> None:
 
         for agent in agents:
             agent.update()
-        check_collisions(agents)
+
+        # Update directed (player-controlled) agents
+        for da in directed:
+            da.update(link_px_set, node_px_set)
+
+        # Collisions: path agents vs path agents, plus any cross-type collisions
+        all_combatants = agents + directed
+        check_collisions(all_combatants)
+        directed = [da for da in directed if da.alive]
+        # Sync player_agent refs
+        for i in range(len(player_agent)):
+            if player_agent[i] is not None and not player_agent[i].alive:
+                player_agent[i] = None
+
         agents = [a for a in agents if a.alive]
 
         # --- Draw ---
@@ -537,6 +614,8 @@ def demo(display) -> None:
 
         for agent in agents:
             agent.draw(display)
+        for da in directed:
+            da.draw(display)
 
         display.render()
         tick += 1

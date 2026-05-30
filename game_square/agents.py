@@ -88,3 +88,69 @@ def check_collisions(agents: list[Agent]) -> None:
             if a.color != b.color and a.pixel == b.pixel:
                 a.derezz()
                 b.derezz()
+
+
+class DirectedAgent:
+    """
+    A player-controlled agent that moves freely pixel-by-pixel.
+
+    Spawns at (x, y) and moves continuously in the last direction
+    the player pressed.  Steered in real-time; dies on hitting a
+    wire, node body, or the grid boundary.
+    """
+
+    STEP_TICKS = 3    # ticks between each move
+    TRAIL_LEN  = 5
+
+    def __init__(self, x: int, y: int, color: Color):
+        self.x      = x
+        self.y      = y
+        self.color  = color
+        self.alive  = True
+        self._dir: tuple[int, int] = (0, 0)
+        self._trail: list[tuple[int, int]] = []
+        self._cooldown = 0
+
+    @property
+    def pixel(self) -> tuple[int, int] | None:
+        return (self.x, self.y) if self.alive else None
+
+    def steer(self, direction: tuple[int, int]) -> None:
+        """Update the movement direction."""
+        self._dir = direction
+
+    def update(self, link_pixels: set, node_pixels: set) -> None:
+        if not self.alive or self._dir == (0, 0):
+            return
+        self._cooldown -= 1
+        if self._cooldown > 0:
+            return
+        self._cooldown = self.STEP_TICKS
+
+        nx = self.x + self._dir[0]
+        ny = self.y + self._dir[1]
+
+        # Out of bounds
+        if not (0 <= nx < 64 and 0 <= ny < 64):
+            self.alive = False
+            return
+        # Hit a wire or node body
+        if (nx, ny) in link_pixels or (nx, ny) in node_pixels:
+            self.alive = False
+            return
+
+        self._trail.append((self.x, self.y))
+        if len(self._trail) > self.TRAIL_LEN:
+            self._trail.pop(0)
+        self.x, self.y = nx, ny
+
+    def derezz(self) -> None:
+        self.alive = False
+
+    def draw(self, display: Display) -> None:
+        if not self.alive:
+            return
+        display.set_pixel(self.x, self.y, self.color)
+        for i, (tx, ty) in enumerate(reversed(self._trail)):
+            factor = (1.0 - (i + 1) / (self.TRAIL_LEN + 1)) * 0.55
+            display.set_pixel(tx, ty, _dim(self.color, factor))

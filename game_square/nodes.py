@@ -65,6 +65,10 @@ _BASE_NUB  = (0, -3)   # tip offset when nub faces up
 
 
 class EnergyNode:
+    CAPTURE_MAX    = 100   # ticks to fully capture from neutral
+    CAPTURE_RATE   = 0.4   # per tick per net agent (attack)
+    GARRISON_RATE  = 0.2   # extra per tick when only friendlies present (no enemy)
+
     def __init__(self, x: int, y: int, orientation: str = 'up'):
         """
         orientation: 'up' | 'down' | 'left' | 'right'
@@ -75,10 +79,51 @@ class EnergyNode:
         self.y = y
         self.orientation  = orientation
         self.owner_color: Color | None = None
+        # capture: -CAPTURE_MAX..+CAPTURE_MAX
+        # negative = player 0 (red), positive = player 1 (yellow)
+        # 0 = neutral
+        self.capture: float = 0.0
         self._casing = _rotate(_BASE_CASING, orientation)
         self._fill   = _rotate(_BASE_FILL,   orientation)
         ndx, ndy     = _rotate([_BASE_NUB],  orientation)[0]
         self._nub    = (ndx, ndy)
+
+    def contest(self, red_agents: int, yellow_agents: int) -> bool:
+        """
+        Push capture value based on contesting agents.  Returns True if the
+        battery just flipped (crossed ±CAPTURE_MAX for the first time).
+
+        Garrison bonus: if only one side is present, they get CAPTURE_RATE +
+        GARRISON_RATE per agent.  If both sides are present the bonus cancels
+        and only the net difference at base CAPTURE_RATE applies.
+
+        Decay: when no agents are contesting, drift back toward neutral.
+        """
+        prev = self.capture
+
+        if red_agents == 0 and yellow_agents == 0:
+            return False
+
+        contested = red_agents > 0 and yellow_agents > 0
+        if contested:
+            # Both sides present — base rate only, net difference
+            delta = (yellow_agents - red_agents) * self.CAPTURE_RATE
+        else:
+            # Uncontested — garrison bonus applies
+            rate = self.CAPTURE_RATE + self.GARRISON_RATE
+            delta = (yellow_agents - red_agents) * rate
+
+        self.capture = max(-self.CAPTURE_MAX,
+                           min( self.CAPTURE_MAX, self.capture + delta))
+
+        just_capped = (abs(self.capture) >= self.CAPTURE_MAX
+                       and abs(prev) < self.CAPTURE_MAX)
+        if just_capped:
+            # Battery is now owned by the capturing side
+            self.owner_color = PLAYER_COLORS[0] if self.capture <= -self.CAPTURE_MAX else PLAYER_COLORS[2]
+            self.capture = -self.CAPTURE_MAX if self.capture < 0 else self.CAPTURE_MAX
+            return True
+        return False
 
     @property
     def connection_point(self) -> tuple[int, int]:
@@ -93,18 +138,43 @@ class EnergyNode:
     def _base_color(self) -> Color:
         return self.owner_color if self.owner_color else NEUTRAL_ENERGY
 
+    @property
+    def _capture_color(self) -> Color:
+        """Blend between owner colour and attacker colour based on capture progress."""
+        frac = abs(self.capture) / self.CAPTURE_MAX   # 0..1
+        if frac < 0.01:
+            return self._base_color
+        # Attacker colour is opposite sign: red pushes negative, yellow positive
+        attacker = PLAYER_COLORS[2] if self.capture > 0 else PLAYER_COLORS[0]  # yellow / red
+        base = self._base_color
+        return Color(
+            int(base.r * (1 - frac) + attacker.r * frac),
+            int(base.g * (1 - frac) + attacker.g * frac),
+            int(base.b * (1 - frac) + attacker.b * frac),
+        )
+
     def draw(self, display: Display, tick: int) -> None:
         t = tick / 50.0 * 2 * math.pi
         fill_bright = 0.45 + 0.55 * math.sin(t)
 
-        fill_color   = _dim(self._base_color, max(0.2, fill_bright))
         casing_color = _dim(self._base_color, CASING_DIM)
+
+        # Fill pixels show capture progress: captured portion uses attacker colour,
+        # remaining portion keeps the owner/neutral pulse.
+        frac = abs(self.capture) / self.CAPTURE_MAX
+        pulse_color    = _dim(self._base_color,   max(0.2, fill_bright))
+        captured_color = _dim(self._capture_color, 0.9)
 
         for dx, dy in self._casing:
             display.set_pixel(self.x + dx, self.y + dy, casing_color)
 
-        for dx, dy in self._fill:
-            display.set_pixel(self.x + dx, self.y + dy, fill_color)
+        total = len(self._fill)
+        for i, (dx, dy) in enumerate(self._fill):
+            # Fill pixels drain left-to-right as capture increases
+            if total > 1 and i < round(frac * total):
+                display.set_pixel(self.x + dx, self.y + dy, captured_color)
+            else:
+                display.set_pixel(self.x + dx, self.y + dy, pulse_color)
 
 
 # ---------------------------------------------------------------------------
@@ -245,14 +315,13 @@ class Armory:
     # Connection tips one pixel beyond each diamond point
     _TIPS = ((0, -3), (0, 3), (-3, 0), (3, 0))
 
-    CHARGE_TICKS = 80   # ticks to produce one agent
+    SPAWN_COST = 5   # energy credits required to spawn one agent
 
     def __init__(self, x: int, y: int, player: int):
         self.x = x
         self.y = y
         self.color = PLAYER_COLORS[player % len(PLAYER_COLORS)]
-        self._charge: int = 0
-        self._ready: bool = False
+        self.energy: int = 0   # accumulated credits from inbound pulses
 
     @property
     def connection_points(self) -> list[tuple[int, int]]:
@@ -274,29 +343,49 @@ class Armory:
     def connection_point(self) -> tuple[int, int]:
         return (self.x, self.y - 3)
 
-    @property
-    def ready(self) -> bool:
-        """True for exactly one tick when an agent should be spawned."""
-        return self._ready
+    def can_spawn(self) -> bool:
+        return self.energy >= self.SPAWN_COST
 
-    def update(self) -> None:
-        """Call once per game tick to advance charge."""
-        self._ready = False
-        self._charge += 1
-        if self._charge >= self.CHARGE_TICKS:
-            self._charge = 0
-            self._ready = True
+    def consume_spawn(self) -> None:
+        self.energy = max(0, self.energy - self.SPAWN_COST)
+
+    FLASH_DURATION = 12   # ticks for the spawn flash
+
+    def trigger_spawn_flash(self) -> None:
+        """Start a brief full-bright flash to signal a spawn event."""
+        self._flash_ticks = self.FLASH_DURATION
 
     def draw(self, display: Display, tick: int) -> None:
-        charge_frac = self._charge / self.CHARGE_TICKS
-        shell_bright  = 0.15 + 0.25 * charge_frac
-        pulse_speed   = 0.04 + 0.18 * charge_frac
-        t             = tick * pulse_speed * 2 * math.pi
-        center_bright = 0.4 + 0.6 * (0.5 + 0.5 * math.sin(t))
+        flash = getattr(self, '_flash_ticks', 0)
+        if flash > 0:
+            self._flash_ticks = flash - 1
+            # Flash: all shell + centre full white-bright, fading out
+            frac = flash / self.FLASH_DURATION          # 1.0 → 0.0
+            brightness = 0.4 + 0.6 * frac
+            for dx, dy in self._SHELL:
+                display.set_pixel(self.x + dx, self.y + dy, _dim(self.color, brightness))
+            display.set_pixel(self.x, self.y, _dim(self.color, brightness))
+            return
 
-        shell_color  = _dim(self.color, shell_bright)
-        center_color = _dim(self.color, center_bright)
+        # Shell pixels: light up one pip per credit, cap at SPAWN_COST.
+        # When full (≥ SPAWN_COST), pulse the centre to signal "ready".
+        filled = min(self.energy, self.SPAWN_COST)
+        shell_pixels = list(self._SHELL)           # 12 pixels
+        pips_total   = len(shell_pixels)           # spread credits across shell
+        pips_lit     = round(filled / self.SPAWN_COST * pips_total)
+        ready        = self.energy >= self.SPAWN_COST
 
-        for dx, dy in self._SHELL:
-            display.set_pixel(self.x + dx, self.y + dy, shell_color)
-        display.set_pixel(self.x, self.y, center_color)
+        for idx, (dx, dy) in enumerate(shell_pixels):
+            if idx < pips_lit:
+                brightness = 0.6 if not ready else (
+                    0.55 + 0.45 * (0.5 + 0.5 * math.sin(tick * 0.18))
+                )
+            else:
+                brightness = 0.08
+            display.set_pixel(self.x + dx, self.y + dy, _dim(self.color, brightness))
+
+        centre_bright = (
+            0.55 + 0.45 * (0.5 + 0.5 * math.sin(tick * 0.18))
+            if ready else 0.25 + 0.15 * (0.5 + 0.5 * math.sin(tick * 0.07))
+        )
+        display.set_pixel(self.x, self.y, _dim(self.color, centre_bright))

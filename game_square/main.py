@@ -196,8 +196,13 @@ class WireBuilder:
             lk.source, lk.destination = lk.destination, lk.source
             lk.path = list(reversed(lk.path))
             lk.gated = False
-            # Claim ownership of the battery
+            # Claim ownership and set capture to full so same-colour agents
+            # don't accidentally push it past the threshold and sever the link.
             dest_obj.owner_color = self.base.color
+            from game_square.nodes import PLAYER_COLORS
+            dest_obj.capture = (-EnergyNode.CAPTURE_MAX
+                                if self.base.color == PLAYER_COLORS[0]
+                                else EnergyNode.CAPTURE_MAX)
 
         return lk
 
@@ -374,6 +379,13 @@ def _update_power(links: list, tick: int = 0) -> None:
                              or getattr(link.destination, 'owner_color', None)
                 if dest_color:
                     link.source.owner_color = dest_color
+                    # Keep capture pinned to the owner's side so same-colour
+                    # garrisoning agents can't accidentally trigger a flip.
+                    from game_square.nodes import PLAYER_COLORS
+                    if dest_color == PLAYER_COLORS[0]:
+                        link.source.capture = -link.source.CAPTURE_MAX
+                    else:
+                        link.source.capture =  link.source.CAPTURE_MAX
             else:
                 # Only clear if no other powered link claims this battery
                 claimed = any(
@@ -431,8 +443,11 @@ def demo(display) -> None:
     armories = [armory0, armory1]
 
     links: list[PowerLine] = []
-    agents: list[Agent] = []
     directed: list[DirectedAgent] = []   # player-controlled agents
+    agents:   list[Agent]         = []   # auto-spawned path agents
+
+    # Attack path templates set by the player's directed agent
+    armory_attack_paths: dict = {armory0: None, armory1: None}
 
     # One WireBuilder per player, keyed to their base
     wire_builders = [
@@ -444,6 +459,16 @@ def demo(display) -> None:
     player_mode = ['link', 'link']
     # One active DirectedAgent per player (or None)
     player_agent: list[DirectedAgent | None] = [None, None]
+    # Chosen launch direction while in preview (before agent spawns)
+    player_preview_dir: list[tuple[int,int]] = [(0, -1), (0, -1)]
+
+    # Tip offset for each direction
+    DIR_TIP: dict[tuple[int,int], tuple[int,int]] = {
+        ( 0, -1): ( 0, -3),
+        ( 0,  1): ( 0,  3),
+        (-1,  0): (-3,  0),
+        ( 1,  0): ( 3,  0),
+    }
 
     while True:
         if not display.pump_events():
@@ -453,14 +478,16 @@ def demo(display) -> None:
         keys_pressed = getattr(display, 'keys_pressed', [])
         held = getattr(display, 'keys_held', None)
 
-        # --- Mode toggle (on keydown) ---
+        # --- Mode toggle ---
         for i, arm in enumerate(armories):
             _, _, _, _, k_agent, k_link = PLAYER_KEYS[i]
             if k_agent in keys_pressed:
+                # Enter preview mode; clear any in-progress wire and saved path.
                 player_mode[i] = 'agent'
-                if wire_builders[i].active:   # cancel any in-progress wire
+                if wire_builders[i].active:
                     wire_builders[i].active = False
                     wire_builders[i].path = []
+                armory_attack_paths[arm] = None
             if k_link in keys_pressed:
                 player_mode[i] = 'link'
                 if player_agent[i] and player_agent[i].alive:
@@ -472,9 +499,32 @@ def demo(display) -> None:
         for lk in links:
             for px, py in lk.path:
                 link_px_set.add((px, py))
+        # Also include developing (uncommitted) wire-builder paths
+        for wb in wire_builders:
+            for px, py in wb.path:
+                link_px_set.add((px, py))
         node_px_set: set[tuple[int,int]] = set()
-        for wb in wire_builders:   # reuse existing helper via a temp instance
-            node_px_set |= wb._node_pixels(connectables)
+        for obj in connectables:
+            if isinstance(obj, EnergyNode):
+                continue   # agents can enter batteries
+            if isinstance(obj, PlayerBase):
+                for dx, dy in obj._FRAME + obj._PINS:
+                    node_px_set.add((obj.x + dx, obj.y + dy))
+                node_px_set.add((obj.x, obj.y))
+            elif isinstance(obj, Armory):
+                for dx, dy in obj._SHELL:
+                    node_px_set.add((obj.x + dx, obj.y + dy))
+                node_px_set.add((obj.x, obj.y))
+        # Map every battery pixel → EnergyNode for contest detection
+        battery_pixel_map: dict[tuple[int,int], EnergyNode] = {}
+        for node in nodes:
+            for dx, dy in node._casing:
+                battery_pixel_map[(node.x + dx, node.y + dy)] = node
+            for dx, dy in node._fill:
+                battery_pixel_map[(node.x + dx, node.y + dy)] = node
+            ndx, ndy = node._nub
+            battery_pixel_map[(node.x + ndx, node.y + ndy)] = node
+            battery_pixel_map[node.connection_point] = node
 
         # --- Keyboard wire building (link mode) ---
         for i, wb in enumerate(wire_builders):
@@ -511,13 +561,7 @@ def demo(display) -> None:
             if wb._cooldown > 0:
                 wb._cooldown -= 1
 
-        # --- Agent mode control ---
-        ARM_DIR_TIP = {
-            ( 0, -1): ( 0, -3),
-            ( 0,  1): ( 0,  3),
-            (-1,  0): (-3,  0),
-            ( 1,  0): ( 3,  0),
-        }
+        # --- Agent preview direction + steering ---
         for i, arm in enumerate(armories):
             if player_mode[i] != 'agent':
                 continue
@@ -529,71 +573,124 @@ def demo(display) -> None:
                 elif held[left]:  direction = (-1,  0)
                 elif held[right]: direction = ( 1,  0)
 
+            if direction is not None:
+                # Always update the preview direction so it tracks the last key.
+                player_preview_dir[i] = direction
+
             pa = player_agent[i]
-            if pa is None or not pa.alive:
+            if pa is not None and pa.alive:
+                # Steer the live agent.
                 if direction is not None:
-                    tip = ARM_DIR_TIP[direction]
-                    sx, sy = arm.x + tip[0], arm.y + tip[1]
-                    pa = DirectedAgent(sx, sy, bases[i].color)
                     pa.steer(direction)
+            else:
+                # No live agent — auto-spawn as soon as credits are ready.
+                if arm.can_spawn():
+                    arm.consume_spawn()
+                    arm.trigger_spawn_flash()
+                    chosen_dir = player_preview_dir[i]
+                    chosen_tip = DIR_TIP[chosen_dir]
+                    sx, sy = arm.x + chosen_tip[0], arm.y + chosen_tip[1]
+                    pa = DirectedAgent(sx, sy, bases[i].color)
+                    pa.steer(chosen_dir)
+                    pa.source_armory = arm
                     pa._cooldown = DirectedAgent.STEP_TICKS
                     player_agent[i] = pa
                     directed.append(pa)
-            else:
-                if direction is not None:
-                    pa.steer(direction)
 
         # --- CPU energy buffering ---
         # Inbound battery→CPU links: count newly arrived pulses and credit the base.
         for lk in links:
             if isinstance(lk.destination, PlayerBase) and lk.powered:
                 lk.destination.energy += lk.check_arrivals(tick)
-        # Outbound CPU→* gated links: spend one energy credit per link per tick.
+        # Outbound CPU→* gated links: spend one energy credit per link,
+        # but only once per PULSE_SPACING ticks so the rate matches inbound.
         for base in bases:
             for lk in links:
                 if lk.source is base and lk.gated and lk.powered and base.energy > 0:
-                    lk.queue_pulse(tick)
-                    base.energy -= 1
+                    last = getattr(lk, '_last_queued_tick', -PowerLine.PULSE_SPACING)
+                    if tick - last >= PowerLine.PULSE_SPACING:
+                        lk.queue_pulse(tick)
+                        lk._last_queued_tick = tick
+                        base.energy -= 1
 
-        # --- Update armories and spawn agents ---
-        for arm in armories:
-            fed = any(lk.powered and (lk.destination is arm or lk.source is arm) for lk in links)
-            if fed:
-                arm.update()
-            if arm.ready:
-                # Find any powered link touching this armory and use it as the
-                # travel path — oriented so agents depart FROM the armory.
-                spawn_path = None
-                for lk in links:
-                    if not lk.powered:
-                        continue
-                    if lk.source is arm:
-                        spawn_path = list(lk.path)
-                        break
-                    if lk.destination is arm:
-                        spawn_path = list(reversed(lk.path))
-                        break
-                if spawn_path and len(spawn_path) > 1:
-                    owner = bases[armories.index(arm)]
-                    agents.append(Agent(path=spawn_path, color=owner.color))
-
-        for agent in agents:
-            agent.update()
+        # --- Battery capture ---
+        # Wired (owned) batteries: only enemy agents can push capture;
+        # same-colour agents and passive decay are suppressed so a defensive
+        # agent never accidentally trips the flip threshold.
+        # Unwired batteries: full contest + decay logic applies.
+        for node in nodes:
+            is_wired = any(
+                lk.powered and (lk.source is node or lk.destination is node)
+                for lk in links
+            )
+            # Count both player-controlled and auto-spawned agents at this battery.
+            def _contesting_node(a) -> bool:
+                return a.alive and getattr(a, 'contesting', False) \
+                       and getattr(a, '_contest_battery', None) is node
+            red_count    = sum(
+                1 for da in directed
+                if da.alive and da.contesting and da._contest_battery is node
+                and da.color == bases[0].color
+            ) + sum(1 for a in agents if _contesting_node(a) and a.color == bases[0].color)
+            yellow_count = sum(
+                1 for da in directed
+                if da.alive and da.contesting and da._contest_battery is node
+                and da.color == bases[1].color
+            ) + sum(1 for a in agents if _contesting_node(a) and a.color == bases[1].color)
+            if is_wired:
+                # Only contest if enemy agents are present; same-colour
+                # defenders count normally so 1v1 is a true stalemate.
+                owner_is_red = (node.owner_color == bases[0].color)
+                enemy_count = yellow_count if owner_is_red else red_count
+                if enemy_count == 0:
+                    continue
+                flipped = node.contest(red_count, yellow_count)
+            else:
+                flipped = node.contest(red_count, yellow_count)
+            if flipped:
+                links = [lk for lk in links
+                         if lk.source is not node and lk.destination is not node]
+                _update_power(links, tick)
 
         # Update directed (player-controlled) agents
         for da in directed:
-            da.update(link_px_set, node_px_set)
+            was_contesting = da.contesting
+            da.update(link_px_set, node_px_set, battery_pixel_map)
+            # Only save path as attack template when the agent successfully
+            # reaches a battery — NOT when it dies mid-path (broken route).
+            if da.contesting and not was_contesting:
+                if da.source_armory is not None and len(da.full_path) > 1:
+                    armory_attack_paths[da.source_armory] = list(da.full_path)
+                for i in range(len(player_agent)):
+                    if player_agent[i] is da:
+                        player_agent[i] = None
 
-        # Collisions: path agents vs path agents, plus any cross-type collisions
-        all_combatants = agents + directed
-        check_collisions(all_combatants)
+        # Collisions between directed agents
+        check_collisions(directed)
         directed = [da for da in directed if da.alive]
+
+        # --- Armory energy and auto-spawn ---
+        # Credit armory energy from pulses arriving on inbound powered links.
+        for lk in links:
+            if isinstance(lk.destination, Armory) and lk.powered:
+                lk.destination.energy += lk.check_arrivals(tick)
+        # Auto-spawn a path agent when armory has enough credits and a path is set.
+        for arm in armories:
+            path = armory_attack_paths.get(arm)
+            if path and arm.can_spawn():
+                arm.consume_spawn()
+                arm.trigger_spawn_flash()
+                agents.append(Agent(path=list(path), color=arm.color))
+
+        all_contesting = list(agents) + list(directed)
+        for agent in agents:
+            agent.update(link_px_set, battery_pixel_map, all_contesting)
+        check_collisions(agents + directed)
+        agents = [a for a in agents if a.alive]
         # Sync player_agent refs
         for i in range(len(player_agent)):
             if player_agent[i] is not None and not player_agent[i].alive:
                 player_agent[i] = None
-
-        agents = [a for a in agents if a.alive]
 
         # --- Draw ---
         display.clear()
@@ -609,13 +706,24 @@ def demo(display) -> None:
             node.draw(display, tick)
         for arm in armories:
             arm.draw(display, tick)
+        # Draw agent preview pips (blinking pixel at chosen tip, no live agent)
+        for i, arm in enumerate(armories):
+            if player_mode[i] == 'agent':
+                pa = player_agent[i]
+                if pa is None or not pa.alive:
+                    tip = DIR_TIP[player_preview_dir[i]]
+                    px, py = arm.x + tip[0], arm.y + tip[1]
+                    blink = (tick // 6) % 2 == 0
+                    bright = 1.0 if blink else 0.3
+                    c = bases[i].color
+                    display.set_pixel(px, py, Color(int(c.r*bright), int(c.g*bright), int(c.b*bright)))
         for base in bases:
             base.draw(display, tick)
 
-        for agent in agents:
-            agent.draw(display)
         for da in directed:
             da.draw(display)
+        for agent in agents:
+            agent.draw(display)
 
         display.render()
         tick += 1

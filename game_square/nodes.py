@@ -80,7 +80,7 @@ class EnergyNode:
         self.orientation  = orientation
         self.owner_color: Color | None = None
         # capture: -CAPTURE_MAX..+CAPTURE_MAX
-        # negative = player 0 (red), positive = player 1 (yellow)
+        # negative = player 0 (red), positive = player 1 (blue)
         # 0 = neutral
         self.capture: float = 0.0
         self._casing = _rotate(_BASE_CASING, orientation)
@@ -88,7 +88,7 @@ class EnergyNode:
         ndx, ndy     = _rotate([_BASE_NUB],  orientation)[0]
         self._nub    = (ndx, ndy)
 
-    def contest(self, red_agents: int, yellow_agents: int) -> bool:
+    def contest(self, red_agents: int, blue_agents: int) -> bool:
         """
         Push capture value based on contesting agents.  Returns True if the
         battery just flipped (crossed ±CAPTURE_MAX for the first time).
@@ -101,17 +101,17 @@ class EnergyNode:
         """
         prev = self.capture
 
-        if red_agents == 0 and yellow_agents == 0:
+        if red_agents == 0 and blue_agents == 0:
             return False
 
-        contested = red_agents > 0 and yellow_agents > 0
+        contested = red_agents > 0 and blue_agents > 0
         if contested:
             # Both sides present — base rate only, net difference
-            delta = (yellow_agents - red_agents) * self.CAPTURE_RATE
+            delta = (blue_agents - red_agents) * self.CAPTURE_RATE
         else:
             # Uncontested — garrison bonus applies
             rate = self.CAPTURE_RATE + self.GARRISON_RATE
-            delta = (yellow_agents - red_agents) * rate
+            delta = (blue_agents - red_agents) * rate
 
         self.capture = max(-self.CAPTURE_MAX,
                            min( self.CAPTURE_MAX, self.capture + delta))
@@ -120,7 +120,7 @@ class EnergyNode:
                        and abs(prev) < self.CAPTURE_MAX)
         if just_capped:
             # Battery is now owned by the capturing side
-            self.owner_color = PLAYER_COLORS[0] if self.capture <= -self.CAPTURE_MAX else PLAYER_COLORS[2]
+            self.owner_color = PLAYER_COLORS[0] if self.capture <= -self.CAPTURE_MAX else PLAYER_COLORS[1]
             self.capture = -self.CAPTURE_MAX if self.capture < 0 else self.CAPTURE_MAX
             return True
         return False
@@ -144,8 +144,8 @@ class EnergyNode:
         frac = abs(self.capture) / self.CAPTURE_MAX   # 0..1
         if frac < 0.01:
             return self._base_color
-        # Attacker colour is opposite sign: red pushes negative, yellow positive
-        attacker = PLAYER_COLORS[2] if self.capture > 0 else PLAYER_COLORS[0]  # yellow / red
+        # Attacker colour is opposite sign: red pushes negative, blue positive
+        attacker = PLAYER_COLORS[1] if self.capture > 0 else PLAYER_COLORS[0]  # blue / red
         base = self._base_color
         return Color(
             int(base.r * (1 - frac) + attacker.r * frac),
@@ -196,7 +196,7 @@ class EnergyNode:
 
 PLAYER_COLORS = [
     Color(220,  50,  50),   # player 1 — red
-    Color( 50, 180, 220),   # player 2 — cyan
+    Color( 50, 100, 240),   # player 2 — blue
     Color(200, 180,   0),   # player 3 — yellow
     Color(160,  50, 220),   # player 4 — purple
 ]

@@ -65,8 +65,8 @@ game_square/
 
 `Color` is a `NamedTuple(r, g, b)`. Named constants: `BLACK WHITE RED GREEN BLUE YELLOW CYAN ORANGE PURPLE GREY`.
 
-`PLAYER_COLORS = [Color(220,50,50), Color(50,180,220), Color(200,180,0), Color(160,50,220)]`  
-Active players use indices `[0, 2]` → **red** and **yellow**.
+`PLAYER_COLORS = [Color(220,50,50), Color(50,100,240), Color(200,180,0), Color(160,50,220)]`  
+Active players use indices `[0, 1]` → **red** and **blue**.
 
 ---
 
@@ -197,7 +197,7 @@ for base in bases:
 Both players place interactively in sequence:
 1. **Red** moves a ghost `PlayerBase` with the cursor → click to place CPU
 2. **Red** moves a ghost `Armory` → click to place Armory
-3. **Yellow** repeats (red's pieces drawn as background context)
+3. **Blue** repeats (red's pieces drawn as background context)
 
 ### Main Loop (per tick)
 

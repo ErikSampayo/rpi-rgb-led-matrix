@@ -115,25 +115,28 @@ class PowerLine(Link):
 
         count = 0
         if self.gated:
-            # Count queued pulses whose position has passed _length
+            surviving = []
             for launch_tick in self._queued:
                 pos = (tick - launch_tick) * self.PULSE_SPEED
                 prev_pos = max(0, (prev - launch_tick) * self.PULSE_SPEED) if prev >= 0 else 0
                 if prev_pos < self._length <= pos:
                     count += 1
+                # Keep pulses still on or approaching the wire
+                if pos < self._length + self.PULSE_WIDTH * 3:
+                    surviving.append(launch_tick)
+            self._queued = surviving
         else:
-            elapsed = tick - self._phase_start
-            prev_elapsed = max(0, prev - self._phase_start) if prev >= 0 else 0
-            i = 0
-            while True:
-                launch = i * self.PULSE_SPACING
-                if launch > elapsed:
-                    break
-                pos      = (elapsed      - launch) * self.PULSE_SPEED
-                prev_pos = (prev_elapsed - launch) * self.PULSE_SPEED if prev_elapsed > launch else 0
-                if prev_pos < self._length <= pos:
-                    count += 1
-                i += 1
+            arrival_offset = self._length / self.PULSE_SPEED
+            last_offset = (tick - self._phase_start) - arrival_offset
+            if last_offset >= 0:
+                if prev >= 0:
+                    first_i = (prev - self._phase_start - arrival_offset) / self.PULSE_SPACING
+                    i_start = max(0, int(math.floor(first_i)) + 1)
+                else:
+                    i_start = 0
+                i_end = int(last_offset // self.PULSE_SPACING)
+                if i_end >= i_start:
+                    count = i_end - i_start + 1
         return count
 
     @property
@@ -181,12 +184,8 @@ class PowerLine(Link):
             _draw_pulses(self._queued)
         else:
             elapsed = tick - self._phase_start
-            launch_ticks = []
-            i = 0
-            while True:
-                launch_offset = i * self.PULSE_SPACING
-                if launch_offset > elapsed:
-                    break
-                launch_ticks.append(self._phase_start + launch_offset)
-                i += 1
+            visible_window = (self._length + self.PULSE_WIDTH * 3) / self.PULSE_SPEED
+            first_i = max(0, int((elapsed - visible_window) // self.PULSE_SPACING))
+            last_i  = int(elapsed // self.PULSE_SPACING)
+            launch_ticks = [self._phase_start + i * self.PULSE_SPACING for i in range(first_i, last_i + 1)]
             _draw_pulses(launch_ticks)

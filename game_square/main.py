@@ -26,8 +26,8 @@ from game_square.agents import Agent, check_collisions, DirectedAgent
 def _dim(color: Color, factor: float) -> Color:
     return Color(int(color.r * factor), int(color.g * factor), int(color.b * factor))
 
-# Player 2 is yellow (index 2 in PLAYER_COLORS)
-PLAYER_INDICES = [0, 2]   # red, yellow
+# Player 2 is blue (index 1 in PLAYER_COLORS)
+PLAYER_INDICES = [0, 1]   # red, blue
 
 # Key bindings: (up, down, left, right, agent_mode, link_mode)
 import pygame
@@ -77,11 +77,12 @@ class WireBuilder:
                 occupied.add((obj.x, obj.y))
         return occupied
 
-    def start(self, direction: tuple[int,int], links: list) -> bool:
+    def start(self, direction: tuple[int,int], links: list, pin_idx: int = 0) -> bool:
         """
         Pick the CPU pin on the side matching `direction` that isn't already
-        the start of a committed link.  Returns False (do nothing) if both
-        pins on that side are already wired.
+        the start of a committed link.  pin_idx selects which of the two
+        pins to prefer when both are free (alternates via caller).
+        Returns False (do nothing) if both pins on that side are already wired.
         """
         # Map direction → pair of _PIN_CONNECTIONS indices
         # _PIN_CONNECTIONS order: north(0,1), south(2,3), west(4,5), east(6,7)
@@ -96,13 +97,15 @@ class WireBuilder:
             return False
 
         all_pins = self.base.connection_points   # list of 8 absolute (x,y)
-        # Find which of the two side-pins aren't already a link source
         used_starts = {lk.path[0] for lk in links if lk.source is self.base}
-        candidates = [all_pins[i] for i in pair if all_pins[i] not in used_starts]
-        if not candidates:
-            return False   # both pins on this side already wired
+        available = [i for i in pair if all_pins[i] not in used_starts]
+        if not available:
+            return False
 
-        chosen = random.choice(candidates)
+        if len(available) == 2:
+            chosen = all_pins[available[pin_idx % 2]]
+        else:
+            chosen = all_pins[available[0]]
         self.path = [chosen]
         self.active = True
         self._cooldown = 0
@@ -122,6 +125,10 @@ class WireBuilder:
         # Out of bounds
         if not (0 <= nx < 64 and 0 <= ny < 64):
             return 'out_of_bounds'
+
+        # Check self-intersection (wire cannot cross itself)
+        if (nx, ny) in self.path:
+            return 'hit_wire'
 
         # Check if we've reached a connection point on another node
         for obj in connectables:
@@ -307,7 +314,7 @@ def auto_placement(nodes: list) -> tuple:
     """
     Place bases and armories automatically — no mouse needed.
     Red CPU: top-left corner region.
-    Yellow CPU: bottom-right corner region.
+    Blue CPU: bottom-right corner region.
     Armories: random, kept away from batteries and the other base.
     """
     base0 = PlayerBase(10, 10, PLAYER_INDICES[0])
@@ -447,7 +454,10 @@ def demo(display) -> None:
     agents:   list[Agent]         = []   # auto-spawned path agents
 
     # Attack path templates set by the player's directed agent
-    armory_attack_paths: dict = {armory0: None, armory1: None}
+    # Maps armory -> {direction: path} so each of the 4 outputs has its own path
+    armory_attack_paths: dict = {armory0: {}, armory1: {}}
+    # Rotation index per armory: which output to spawn from next (0..3)
+    armory_rotation: dict = {armory0: 0, armory1: 0}
 
     # One WireBuilder per player, keyed to their base
     wire_builders = [
@@ -461,6 +471,15 @@ def demo(display) -> None:
     player_agent: list[DirectedAgent | None] = [None, None]
     # Chosen launch direction while in preview (before agent spawns)
     player_preview_dir: list[tuple[int,int]] = [(0, -1), (0, -1)]
+    # Wire preview direction: first press aims, second press starts
+    wire_preview_dir: list[tuple[int,int] | None] = [None, None]
+    # Pin rotation per player: {direction: 0|1} — alternates which of the
+    # two CPU pins on a side gets used next.
+    wire_pin_idx: list[dict[tuple[int,int], int]] = [{}, {}]
+    # Armed: True when the player has pressed E and is waiting for a scout
+    # to spawn or steering one.  False (waiting) after the scout finishes —
+    # the armory's rotational auto-spawn handles output until E is pressed.
+    player_armed = [False, False]
 
     # Tip offset for each direction
     DIR_TIP: dict[tuple[int,int], tuple[int,int]] = {
@@ -468,6 +487,18 @@ def demo(display) -> None:
         ( 0,  1): ( 0,  3),
         (-1,  0): (-3,  0),
         ( 1,  0): ( 3,  0),
+    }
+
+    # Clockwise rotation order for armory auto-spawn
+    SPAWN_DIRS = [(0, -1), (1, 0), (0, 1), (-1, 0)]
+    # Reverse of DIR_TIP: tip offset → direction
+    TIP_TO_DIR = {tip: d for d, tip in DIR_TIP.items()}
+    # CPU pin indices for each direction (matches _PIN_CONNECTIONS order)
+    DIR_PIN_INDICES = {
+        ( 0, -1): (0, 1),   # up    → north pins
+        ( 0,  1): (2, 3),   # down  → south pins
+        (-1,  0): (4, 5),   # left  → west pins
+        ( 1,  0): (6, 7),   # right → east pins
     }
 
     while True:
@@ -482,14 +513,18 @@ def demo(display) -> None:
         for i, arm in enumerate(armories):
             _, _, _, _, k_agent, k_link = PLAYER_KEYS[i]
             if k_agent in keys_pressed:
-                # Enter preview mode; clear any in-progress wire and saved path.
+                # Enter agent mode and arm for a new scout.  Releasing
+                # the current scout puts it on auto-pilot.
                 player_mode[i] = 'agent'
+                player_armed[i] = True
                 if wire_builders[i].active:
                     wire_builders[i].active = False
                     wire_builders[i].path = []
-                armory_attack_paths[arm] = None
+                wire_preview_dir[i] = None
+                player_agent[i] = None
             if k_link in keys_pressed:
                 player_mode[i] = 'link'
+                wire_preview_dir[i] = None
                 if player_agent[i] and player_agent[i].alive:
                     player_agent[i].derezz()
                 player_agent[i] = None
@@ -527,21 +562,41 @@ def demo(display) -> None:
             battery_pixel_map[node.connection_point] = node
 
         # --- Keyboard wire building (link mode) ---
+        # Two-stage: first press of a direction shows a preview pip on
+        # the CPU pins; second press of the same direction starts the wire.
         for i, wb in enumerate(wire_builders):
             if player_mode[i] != 'link':
                 continue
             up, down, left, right, _, _ = wb.keys
-            direction = None
-            if held is not None:
-                if   held[up]:    direction = ( 0, -1)
-                elif held[down]:  direction = ( 0,  1)
-                elif held[left]:  direction = (-1,  0)
-                elif held[right]: direction = ( 1,  0)
 
-            if direction is not None:
-                if not wb.active:
-                    wb.start(direction, links)
-                elif wb._cooldown <= 0:
+            if not wb.active:
+                # Two-stage selection using fresh keypresses only
+                press_dir = None
+                if   up in keys_pressed:    press_dir = ( 0, -1)
+                elif down in keys_pressed:  press_dir = ( 0,  1)
+                elif left in keys_pressed:  press_dir = (-1,  0)
+                elif right in keys_pressed: press_dir = ( 1,  0)
+
+                if press_dir is not None:
+                    if wire_preview_dir[i] == press_dir:
+                        # Second press — start the wire
+                        pidx = wire_pin_idx[i].get(press_dir, 0)
+                        if wb.start(press_dir, links, pidx):
+                            wire_pin_idx[i][press_dir] = (pidx + 1) % 2
+                        wire_preview_dir[i] = None
+                    else:
+                        # First press or different direction — set preview
+                        wire_preview_dir[i] = press_dir
+            else:
+                # Wire active: grow with held keys
+                direction = None
+                if held is not None:
+                    if   held[up]:    direction = ( 0, -1)
+                    elif held[down]:  direction = ( 0,  1)
+                    elif held[left]:  direction = (-1,  0)
+                    elif held[right]: direction = ( 1,  0)
+
+                if direction is not None and wb._cooldown <= 0:
                     result = wb.step(direction, links, connectables)
                     if result == 'connected':
                         new_link = wb.commit(connectables, links, tick)
@@ -558,44 +613,85 @@ def demo(display) -> None:
                         wb.path = []
                     else:   # 'ok'
                         wb._cooldown = WIRE_STEP_TICKS
+
             if wb._cooldown > 0:
                 wb._cooldown -= 1
 
-        # --- Agent preview direction + steering ---
+        # --- Determine which armory tips are occupied by wires ---
+        armory_wired_dirs: dict = {}
+        for arm in armories:
+            wired = set()
+            for lk in links:
+                if lk.destination is not arm and lk.source is not arm:
+                    continue
+                for cp in arm.connection_points:
+                    if cp in lk.path:
+                        offset = (cp[0] - arm.x, cp[1] - arm.y)
+                        d = TIP_TO_DIR.get(offset)
+                        if d:
+                            wired.add(d)
+                        break
+            armory_wired_dirs[arm] = wired
+
+        # --- Credit armory energy from inbound pulses ---
+        # Done early so the player's scout gets first dibs on energy
+        # before the auto-spawn rotation consumes it.
+        for lk in links:
+            if isinstance(lk.destination, Armory) and lk.powered:
+                lk.destination.energy += lk.check_arrivals(tick)
+
+        # --- Agent steering and auto-launch ---
+        # Three states per player (while in agent mode):
+        #   waiting     — scout just finished; no new controllable scout
+        #                 until E is pressed.  The armory's rotational
+        #                 auto-spawn continues using saved paths.
+        #   armed       — E pressed, no scout; held keys aim preview,
+        #                 auto-launches a controllable scout when charged.
+        #   controlling — armed, scout alive; held keys steer it.
         for i, arm in enumerate(armories):
             if player_mode[i] != 'agent':
                 continue
             up, down, left, right, _, _ = PLAYER_KEYS[i]
-            direction = None
-            if held is not None:
-                if   held[up]:    direction = ( 0, -1)
-                elif held[down]:  direction = ( 0,  1)
-                elif held[left]:  direction = (-1,  0)
-                elif held[right]: direction = ( 1,  0)
 
-            if direction is not None:
-                # Always update the preview direction so it tracks the last key.
-                player_preview_dir[i] = direction
+            held_dir = None
+            if held is not None:
+                if   held[up]:    held_dir = ( 0, -1)
+                elif held[down]:  held_dir = ( 0,  1)
+                elif held[left]:  held_dir = (-1,  0)
+                elif held[right]: held_dir = ( 1,  0)
 
             pa = player_agent[i]
             if pa is not None and pa.alive:
-                # Steer the live agent.
-                if direction is not None:
-                    pa.steer(direction)
-            else:
-                # No live agent — auto-spawn as soon as credits are ready.
-                if arm.can_spawn():
+                # --- Controlling: steer the scout ---
+                if held_dir is not None:
+                    pa.steer(held_dir)
+            elif player_armed[i]:
+                # --- Armed: aim preview, auto-launch when charged ---
+                wired = armory_wired_dirs[arm]
+                if held_dir is not None and held_dir not in wired:
+                    player_preview_dir[i] = held_dir
+
+                want_dir = player_preview_dir[i]
+                if want_dir in wired or want_dir == (0, 0):
+                    want_dir = next((d for d in SPAWN_DIRS if d not in wired), None)
+
+                if want_dir is not None and arm.can_spawn() and want_dir not in wired:
                     arm.consume_spawn()
                     arm.trigger_spawn_flash()
-                    chosen_dir = player_preview_dir[i]
-                    chosen_tip = DIR_TIP[chosen_dir]
+                    chosen_tip = DIR_TIP[want_dir]
                     sx, sy = arm.x + chosen_tip[0], arm.y + chosen_tip[1]
                     pa = DirectedAgent(sx, sy, bases[i].color)
-                    pa.steer(chosen_dir)
+                    pa.steer(want_dir)
                     pa.source_armory = arm
+                    pa.launch_dir = want_dir
                     pa._cooldown = DirectedAgent.STEP_TICKS
                     player_agent[i] = pa
                     directed.append(pa)
+            else:
+                # --- Waiting: aim preview only, no launch ---
+                wired = armory_wired_dirs[arm]
+                if held_dir is not None and held_dir not in wired:
+                    player_preview_dir[i] = held_dir
 
         # --- CPU energy buffering ---
         # Inbound battery→CPU links: count newly arrived pulses and credit the base.
@@ -632,7 +728,7 @@ def demo(display) -> None:
                 if da.alive and da.contesting and da._contest_battery is node
                 and da.color == bases[0].color
             ) + sum(1 for a in agents if _contesting_node(a) and a.color == bases[0].color)
-            yellow_count = sum(
+            blue_count = sum(
                 1 for da in directed
                 if da.alive and da.contesting and da._contest_battery is node
                 and da.color == bases[1].color
@@ -641,12 +737,12 @@ def demo(display) -> None:
                 # Only contest if enemy agents are present; same-colour
                 # defenders count normally so 1v1 is a true stalemate.
                 owner_is_red = (node.owner_color == bases[0].color)
-                enemy_count = yellow_count if owner_is_red else red_count
+                enemy_count = blue_count if owner_is_red else red_count
                 if enemy_count == 0:
                     continue
-                flipped = node.contest(red_count, yellow_count)
+                flipped = node.contest(red_count, blue_count)
             else:
-                flipped = node.contest(red_count, yellow_count)
+                flipped = node.contest(red_count, blue_count)
             if flipped:
                 links = [lk for lk in links
                          if lk.source is not node and lk.destination is not node]
@@ -656,31 +752,51 @@ def demo(display) -> None:
         for da in directed:
             was_contesting = da.contesting
             da.update(link_px_set, node_px_set, battery_pixel_map)
-            # Only save path as attack template when the agent successfully
-            # reaches a battery — NOT when it dies mid-path (broken route).
+            # Continuously update the path while the scout is alive so
+            # auto-spawned agents can follow it in real-time, before the
+            # path is complete.  The path persists after the scout dies
+            # or reaches a battery.
+            if da.alive and da.source_armory is not None and len(da.full_path) > 1:
+                paths = armory_attack_paths[da.source_armory]
+                if da.launch_dir in paths:
+                    paths[da.launch_dir].clear()
+                    paths[da.launch_dir].extend(da.full_path)
+                else:
+                    paths[da.launch_dir] = list(da.full_path)
             if da.contesting and not was_contesting:
-                if da.source_armory is not None and len(da.full_path) > 1:
-                    armory_attack_paths[da.source_armory] = list(da.full_path)
                 for i in range(len(player_agent)):
                     if player_agent[i] is da:
                         player_agent[i] = None
+                        player_armed[i] = False
 
         # Collisions between directed agents
         check_collisions(directed)
         directed = [da for da in directed if da.alive]
 
-        # --- Armory energy and auto-spawn ---
-        # Credit armory energy from pulses arriving on inbound powered links.
-        for lk in links:
-            if isinstance(lk.destination, Armory) and lk.powered:
-                lk.destination.energy += lk.check_arrivals(tick)
-        # Auto-spawn a path agent when armory has enough credits and a path is set.
+        # --- Auto-spawn ---
+        # Auto-spawn a path agent when armory has enough credits.
+        # Rotates through the 4 outputs, spawning from the next one that
+        # has a recorded path.
         for arm in armories:
-            path = armory_attack_paths.get(arm)
-            if path and arm.can_spawn():
-                arm.consume_spawn()
-                arm.trigger_spawn_flash()
-                agents.append(Agent(path=list(path), color=arm.color))
+            if not arm.can_spawn():
+                continue
+            paths = armory_attack_paths.get(arm, {})
+            if not paths:
+                continue
+            rot = armory_rotation[arm]
+            wired = armory_wired_dirs[arm]
+            for offset in range(4):
+                idx = (rot + offset) % 4
+                d = SPAWN_DIRS[idx]
+                if d in wired:
+                    continue
+                path = paths.get(d)
+                if path:
+                    arm.consume_spawn()
+                    arm.trigger_spawn_flash()
+                    agents.append(Agent(path=path, color=arm.color))
+                    armory_rotation[arm] = (idx + 1) % 4
+                    break
 
         all_contesting = list(agents) + list(directed)
         for agent in agents:
@@ -691,6 +807,7 @@ def demo(display) -> None:
         for i in range(len(player_agent)):
             if player_agent[i] is not None and not player_agent[i].alive:
                 player_agent[i] = None
+                player_armed[i] = False
 
         # --- Draw ---
         display.clear()
@@ -701,6 +818,24 @@ def demo(display) -> None:
         for wb in wire_builders:
             if wb.active:
                 wb.draw(display, wb.base.color)
+
+        # Draw wire preview pips on available CPU pins
+        for i, wb in enumerate(wire_builders):
+            if player_mode[i] == 'link' and not wb.active and wire_preview_dir[i] is not None:
+                d = wire_preview_dir[i]
+                base = bases[i]
+                all_pins = base.connection_points
+                used = {lk.path[0] for lk in links if lk.source is base}
+                available = [idx for idx in DIR_PIN_INDICES[d] if all_pins[idx] not in used]
+                if available:
+                    pidx = wire_pin_idx[i].get(d, 0)
+                    chosen_idx = available[pidx % len(available)] if len(available) > 1 else available[0]
+                    pin = all_pins[chosen_idx]
+                    blink = (tick // 6) % 2 == 0
+                    bright = 0.8 if blink else 0.2
+                    c = base.color
+                    display.set_pixel(*pin,
+                        Color(int(c.r * bright), int(c.g * bright), int(c.b * bright)))
 
         for node in nodes:
             node.draw(display, tick)
@@ -713,10 +848,22 @@ def demo(display) -> None:
                 if pa is None or not pa.alive:
                     tip = DIR_TIP[player_preview_dir[i]]
                     px, py = arm.x + tip[0], arm.y + tip[1]
-                    blink = (tick // 6) % 2 == 0
-                    bright = 1.0 if blink else 0.3
                     c = bases[i].color
-                    display.set_pixel(px, py, Color(int(c.r*bright), int(c.g*bright), int(c.b*bright)))
+                    if player_armed[i]:
+                        # Armed: fast blink + white tint
+                        blink = (tick // 3) % 2 == 0
+                        bright = 1.0 if blink else 0.4
+                        c = Color(
+                            min(255, int(c.r * bright + 60)),
+                            min(255, int(c.g * bright + 60)),
+                            min(255, int(c.b * bright + 60)),
+                        )
+                    else:
+                        # Waiting: slow blink, dimmer
+                        blink = (tick // 6) % 2 == 0
+                        bright = 0.7 if blink else 0.2
+                        c = Color(int(c.r * bright), int(c.g * bright), int(c.b * bright))
+                    display.set_pixel(px, py, c)
         for base in bases:
             base.draw(display, tick)
 

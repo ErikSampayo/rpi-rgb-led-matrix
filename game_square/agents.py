@@ -283,6 +283,7 @@ class DirectedAgent:
         self._cooldown = 0
         self.full_path: list[tuple[int, int]] = [(x, y)]  # every pixel visited
         self.source_armory = None   # set by game loop to track which armory spawned this
+        self.launch_dir: tuple[int, int] = (0, 0)  # direction this agent was launched from
 
         # Contesting state
         self.contesting = False

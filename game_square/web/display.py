@@ -54,6 +54,7 @@ class WebDisplay(Display):
 
         self._held_keys: set[int] = set()
         self._frame_count = 0
+        self._should_reset = False
 
     # ------------------------------------------------------------------
     # Display interface
@@ -83,6 +84,13 @@ class WebDisplay(Display):
             pass
 
     def pump_events(self) -> bool:
+        if self._should_reset:
+            self._should_reset = False
+            self._held_keys.clear()
+            self.keys_held = HeldKeysView(set())
+            self.clear()
+            return False
+
         self.clicked.clear()
         self.keys_pressed.clear()
 
@@ -109,3 +117,6 @@ class WebDisplay(Display):
 
     def push_input(self, kind: str, keycode: int) -> None:
         self.input_queue.put((kind, keycode))
+
+    def request_reset(self) -> None:
+        self._should_reset = True

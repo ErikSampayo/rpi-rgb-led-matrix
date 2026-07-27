@@ -39,6 +39,8 @@
             roleBadge.textContent = "Spectating";
             roleBadge.className = "spectator";
           }
+        } else if (msg.type === "reset") {
+          ctx.clearRect(0, 0, 64, 64);
         }
       } else {
         const frame = new Uint8Array(event.data);
@@ -78,6 +80,12 @@
     if (GAME_KEYS.has(e.code)) {
       e.preventDefault();
       sendKey("keyup", e.code);
+    }
+  });
+
+  document.getElementById("reset-btn").addEventListener("click", () => {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: "reset" }));
     }
   });
 

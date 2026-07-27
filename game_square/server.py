@@ -66,7 +66,8 @@ FRAME_INTERVAL_MS = 40   # ~25 fps broadcast
 
 def run_game():
     from game_square.main import demo
-    demo(display)
+    while True:
+        demo(display)
 
 
 # ---------------------------------------------------------------------------
@@ -89,11 +90,14 @@ class GameSocketHandler(tornado.websocket.WebSocketHandler):
         self.write_message(json.dumps({"type": "role", "role": self.role}))
 
     def on_message(self, message):
-        if self.role == "spectator":
-            return
         try:
             msg = json.loads(message)
         except (json.JSONDecodeError, TypeError):
+            return
+        if msg.get("type") == "reset":
+            do_reset()
+            return
+        if self.role == "spectator":
             return
         if msg.get("type") == "keydown":
             code = KEY_MAP.get(msg.get("code"))
@@ -146,9 +150,29 @@ class IndexHandler(tornado.web.RequestHandler):
         self.render(os.path.join(STATIC_DIR, "index.html"))
 
 
+class ResetHandler(tornado.web.RequestHandler):
+    def post(self):
+        do_reset()
+        self.write({"status": "ok"})
+
+    def get(self):
+        do_reset()
+        self.write({"status": "ok"})
+
+
+def do_reset():
+    display.request_reset()
+    for client in list(clients):
+        try:
+            client.write_message(json.dumps({"type": "reset"}))
+        except Exception:
+            pass
+
+
 def make_app() -> tornado.web.Application:
     return tornado.web.Application([
         (r"/",             IndexHandler),
+        (r"/reset",        ResetHandler),
         (r"/static/(.*)",  tornado.web.StaticFileHandler, {"path": STATIC_DIR}),
         (r"/ws",           GameSocketHandler),
     ])

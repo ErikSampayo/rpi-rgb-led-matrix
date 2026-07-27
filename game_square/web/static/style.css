@@ -53,6 +53,32 @@ body {
   background: #1a1a1a;
 }
 
+#bottom-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+#reset-btn {
+  font-family: inherit;
+  font-size: 13px;
+  padding: 4px 14px;
+  border-radius: 4px;
+  background: #1a1a1a;
+  color: #ccc;
+  border: 1px solid #444;
+  cursor: pointer;
+}
+
+#reset-btn:hover {
+  background: #2a2a2a;
+  border-color: #666;
+}
+
+#reset-btn:active {
+  background: #333;
+}
+
 #role-badge.player1 {
   color: rgb(220, 50, 50);
   border: 1px solid rgb(220, 50, 50);

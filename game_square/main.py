@@ -152,6 +152,9 @@ class WireBuilder:
                     )
                     if has_link:
                         return 'hit_node'
+                # Cannot wire to an opposing player's armory
+                if isinstance(obj, Armory) and obj.color != self.base.color:
+                    return 'hit_node'
                 self.path.append((nx, ny))
                 return 'connected'
 

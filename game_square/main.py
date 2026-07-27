@@ -816,6 +816,13 @@ def demo(display) -> None:
         all_contesting = list(agents) + list(directed)
         for agent in agents:
             agent.update(link_px_set, battery_pixel_map, all_contesting)
+
+        # Check for bounces and play sound
+        for a in agents + directed:
+            if getattr(a, 'bounced', False):
+                display.push_sound("bounce")
+                a.bounced = False
+
         alive_before = sum(1 for a in agents + directed if a.alive)
         check_collisions(agents + directed)
         alive_after = sum(1 for a in agents + directed if a.alive)

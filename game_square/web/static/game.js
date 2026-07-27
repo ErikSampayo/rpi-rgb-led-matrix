@@ -58,6 +58,7 @@
     },
     toggle:   () => tone({ type: "sine",     freq: 300,  dur: 0.03, vol: 0.08 }),
     reset:    () => tone({ type: "sawtooth", freq: 600,  freqEnd: 50,   dur: 0.40, vol: 0.12 }),
+    bounce:   () => tone({ type: "triangle", freq: 180,  freqEnd: 120,  dur: 0.08, vol: 0.10 }),
   };
 
   // ------------------------------------------------------------------

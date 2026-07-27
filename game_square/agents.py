@@ -10,6 +10,7 @@ for checking collisions across all active agents.
 """
 
 import math
+import random
 from game_square.display.base import Display, Color
 
 
@@ -55,6 +56,7 @@ class Agent:
         self._shots: list[list[int]] = []
         self.x, self.y   = path[0] if path else (0, 0)
         self._trail: list[tuple[int, int]] = []
+        self.bounced = False
 
     @property
     def pixel(self) -> tuple[int, int] | None:
@@ -86,6 +88,25 @@ class Agent:
                     perimeter.add(candidate)
         return list(perimeter)
 
+    def _bounce(self, from_x: int, from_y: int) -> None:
+        """Bounce off a full battery in a random direction (not towards it)."""
+        towards = self._dir
+        dirs = [(0, -1), (0, 1), (-1, 0), (1, 0)]
+        if towards in dirs:
+            dirs.remove(towards)
+        new_dir = random.choice(dirs)
+        new_path = [(from_x, from_y)]
+        nx, ny = from_x + new_dir[0], from_y + new_dir[1]
+        while 0 <= nx < 64 and 0 <= ny < 64:
+            new_path.append((nx, ny))
+            nx += new_dir[0]
+            ny += new_dir[1]
+        self.path = new_path
+        self.pos = 0.0
+        self.x, self.y = from_x, from_y
+        self._dir = new_dir
+        self.bounced = True
+
     def _enter_contest(self, battery_pixel_map: dict,
                        contesting_agents: list | None = None) -> bool:
         """Derive hover position and battery from path end; enter contesting mode."""
@@ -106,15 +127,17 @@ class Agent:
         if battery is None:
             return False
         self._contest_battery = battery
-        # Check if battery is already at capacity
+        # Check if battery is already at capacity for this faction
         if contesting_agents:
             current = sum(
                 1 for other in contesting_agents
                 if other is not self
                 and getattr(other, 'contesting', False)
                 and getattr(other, '_contest_battery', None) is battery
+                and getattr(other, 'color', None) == self.color
             )
             if current >= self.MAX_CONTENDING:
+                self._bounce(hx, hy)
                 return False
         # Choose a hover position on the battery perimeter with fewest occupants.
         natural_hover = (hx, hy)
@@ -221,7 +244,7 @@ class Agent:
             # Reached path end — try to enter contesting state
             if battery_pixel_map is not None and self._enter_contest(battery_pixel_map, contesting_agents):
                 self.arrived = True
-            else:
+            elif not self.bounced:
                 self.alive   = False
                 self.arrived = True
         else:
@@ -308,6 +331,7 @@ class DirectedAgent:
         self._shot_cd     = 0
         # Each shot: [sx, sy, step_dx, step_dy]
         self._shots: list[list[int]] = []
+        self.bounced = False
 
     @property
     def pixel(self) -> tuple[int, int] | None:
@@ -317,17 +341,28 @@ class DirectedAgent:
         if not self.contesting:
             self._dir = direction
 
+    def _bounce(self) -> None:
+        """Bounce off a full battery in a random direction (not towards it)."""
+        towards = self._dir
+        dirs = [(0, -1), (0, 1), (-1, 0), (1, 0)]
+        if towards in dirs:
+            dirs.remove(towards)
+        self._dir = random.choice(dirs)
+        self.bounced = True
+
     def _enter_contest(self, battery, contesting_agents=None) -> bool:
         """Switch to contesting mode, hovering just outside `battery`.
-        Returns False if the battery is at capacity (agent dies instead)."""
+        Returns False if the battery is at capacity (agent bounces instead)."""
         if contesting_agents:
             current = sum(
                 1 for other in contesting_agents
                 if other is not self
                 and getattr(other, 'contesting', False)
                 and getattr(other, '_contest_battery', None) is battery
+                and getattr(other, 'color', None) == self.color
             )
             if current >= self.MAX_CONTENDING:
+                self._bounce()
                 return False
         self.contesting      = True
         self._contest_battery = battery
@@ -371,7 +406,8 @@ class DirectedAgent:
             if (nx, ny) in battery_pixel_map:
                 # Reached a battery — stay here and start contesting
                 if not self._enter_contest(battery_pixel_map[(nx, ny)], contesting_agents):
-                    self.alive = False
+                    if not self.bounced:
+                        self.alive = False
                 return
 
             self._trail.append((self.x, self.y))

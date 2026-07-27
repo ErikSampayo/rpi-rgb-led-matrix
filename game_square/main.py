@@ -588,6 +588,7 @@ def demo(display) -> None:
                         pidx = wire_pin_idx[i].get(press_dir, 0)
                         if wb.start(press_dir, links, pidx):
                             wire_pin_idx[i][press_dir] = (pidx + 1) % 2
+                            display.push_sound(f"wire_start_{i}")
                         wire_preview_dir[i] = None
                     else:
                         # First press or different direction — set preview
@@ -609,15 +610,19 @@ def demo(display) -> None:
                             links.append(new_link)
                             _update_power(links, tick)
                             display.push_sound("connect")
+                        display.push_sound(f"wire_end_{i}")
                         wb.active = False
                         wb.path = []
                     elif result == 'hit_wire':
+                        display.push_sound(f"wire_end_{i}")
                         wb.active = False
                         wb.path = []
                     elif result in ('hit_node', 'out_of_bounds'):
+                        display.push_sound(f"wire_end_{i}")
                         wb.active = False
                         wb.path = []
                     else:   # 'ok'
+                        display.push_sound(f"wire_step_{i}")
                         wb._cooldown = WIRE_STEP_TICKS
 
             if wb._cooldown > 0:

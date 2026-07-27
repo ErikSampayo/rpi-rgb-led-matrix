@@ -60,9 +60,73 @@
     reset:    () => tone({ type: "sawtooth", freq: 600,  freqEnd: 50,   dur: 0.40, vol: 0.12 }),
   };
 
+  // ------------------------------------------------------------------
+  // Continuous wire-drawing sound (saw wave, per-player base pitch)
+  // ------------------------------------------------------------------
+
+  const WIRE_BASE_FREQ = [110, 165];   // P1 = A2, P2 = E3
+  const WIRE_STEP_HZ   = 3;            // pitch rise per pixel
+  const WIRE_MAX_HZ    = 440;
+  let wireOsc = [null, null];
+  let wireGain = [null, null];
+  let wireSteps = [0, 0];
+
+  function wireStart(player) {
+    if (!audioCtx) return;
+    wireStop(player);
+    wireSteps[player] = 0;
+    const t = audioCtx.currentTime;
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = "sawtooth";
+    osc.frequency.setValueAtTime(WIRE_BASE_FREQ[player], t);
+    gain.gain.setValueAtTime(0, t);
+    gain.gain.linearRampToValueAtTime(0.04, t + 0.05);
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+    osc.start(t);
+    wireOsc[player] = osc;
+    wireGain[player] = gain;
+  }
+
+  function wireStep(player) {
+    const osc = wireOsc[player];
+    if (!osc || !audioCtx) return;
+    wireSteps[player]++;
+    const freq = Math.min(WIRE_MAX_HZ, WIRE_BASE_FREQ[player] + wireSteps[player] * WIRE_STEP_HZ);
+    osc.frequency.linearRampToValueAtTime(freq, audioCtx.currentTime + 0.04);
+  }
+
+  function wireStop(player) {
+    const osc = wireOsc[player];
+    const gain = wireGain[player];
+    if (!osc || !audioCtx) return;
+    const t = audioCtx.currentTime;
+    gain.gain.cancelScheduledValues(t);
+    gain.gain.setValueAtTime(gain.gain.value, t);
+    gain.gain.linearRampToValueAtTime(0, t + 0.08);
+    osc.stop(t + 0.10);
+    wireOsc[player] = null;
+    wireGain[player] = null;
+  }
+
   function playSound(name) {
     if (!audioCtx) initAudio();
     if (audioCtx.state === "suspended") audioCtx.resume();
+
+    if (name.startsWith("wire_start_")) {
+      wireStart(parseInt(name.slice(-1)));
+      return;
+    }
+    if (name.startsWith("wire_step_")) {
+      wireStep(parseInt(name.slice(-1)));
+      return;
+    }
+    if (name.startsWith("wire_end_")) {
+      wireStop(parseInt(name.slice(-1)));
+      return;
+    }
+
     const fn = SOUNDS[name];
     if (fn) fn();
   }
@@ -96,6 +160,8 @@
           ctx.clearRect(0, 0, 64, 64);
           imageData = ctx.createImageData(64, 64);
           awaitingFullFrame = true;
+          wireStop(0);
+          wireStop(1);
           playSound("reset");
         } else if (msg.type === "sound") {
           playSound(msg.name);

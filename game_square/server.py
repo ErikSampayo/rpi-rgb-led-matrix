@@ -67,9 +67,7 @@ FRAME_INTERVAL_MS = 40   # ~25 fps broadcast
 def run_game():
     from game_square.main import demo
     while True:
-        print("[game] starting demo()", flush=True)
         demo(display)
-        print("[game] demo() returned, restarting", flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -163,7 +161,6 @@ class ResetHandler(tornado.web.RequestHandler):
 
 
 def do_reset():
-    print("[reset] do_reset called", flush=True)
     display.request_reset()
     for client in list(clients):
         try:
@@ -172,11 +169,16 @@ def do_reset():
             pass
 
 
+class NoCacheStaticFileHandler(tornado.web.StaticFileHandler):
+    def set_extra_headers(self, path):
+        self.set_header("Cache-Control", "no-cache, must-revalidate")
+
+
 def make_app() -> tornado.web.Application:
     return tornado.web.Application([
         (r"/",             IndexHandler),
         (r"/reset",        ResetHandler),
-        (r"/static/(.*)",  tornado.web.StaticFileHandler, {"path": STATIC_DIR}),
+        (r"/static/(.*)",  NoCacheStaticFileHandler, {"path": STATIC_DIR}),
         (r"/ws",           GameSocketHandler),
     ])
 

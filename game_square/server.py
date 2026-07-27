@@ -89,6 +89,10 @@ class GameSocketHandler(tornado.websocket.WebSocketHandler):
 
         self.write_message(json.dumps({"type": "role", "role": self.role}))
 
+        # Force a full frame so the new client sees current game state
+        # instead of deltas with no reference frame.
+        display._full_frame_pending = True
+
     def on_message(self, message):
         try:
             msg = json.loads(message)

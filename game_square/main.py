@@ -764,7 +764,8 @@ def demo(display) -> None:
         # Update directed (player-controlled) agents
         for da in directed:
             was_contesting = da.contesting
-            da.update(link_px_set, node_px_set, battery_pixel_map)
+            da.update(link_px_set, node_px_set, battery_pixel_map,
+                      list(agents) + list(directed))
             # Continuously update the path while the scout is alive so
             # auto-spawned agents can follow it in real-time, before the
             # path is complete.  The path persists after the scout dies

@@ -67,6 +67,7 @@ class Agent:
         return None
 
     MAX_PER_HOVER = 3   # agents allowed to share the same hover base
+    MAX_CONTENDING = 6  # total agents contesting a single battery
 
     def _battery_perimeter(self, battery) -> list[tuple[int, int]]:
         """Return all in-bounds pixels adjacent to the battery sprite but outside it."""
@@ -105,6 +106,16 @@ class Agent:
         if battery is None:
             return False
         self._contest_battery = battery
+        # Check if battery is already at capacity
+        if contesting_agents:
+            current = sum(
+                1 for other in contesting_agents
+                if other is not self
+                and getattr(other, 'contesting', False)
+                and getattr(other, '_contest_battery', None) is battery
+            )
+            if current >= self.MAX_CONTENDING:
+                return False
         # Choose a hover position on the battery perimeter with fewest occupants.
         natural_hover = (hx, hy)
         if contesting_agents:
@@ -272,6 +283,7 @@ class DirectedAgent:
     OSC_TICKS     = 6    # ticks between oscillation steps (contesting state)
     SHOT_COOLDOWN = 18   # ticks between shots
     SHOT_SPEED    = 1    # pixels per tick (integer)
+    MAX_CONTENDING = 6  # total agents contesting a single battery
 
     def __init__(self, x: int, y: int, color: Color):
         self.x      = x
@@ -305,8 +317,18 @@ class DirectedAgent:
         if not self.contesting:
             self._dir = direction
 
-    def _enter_contest(self, battery) -> None:
-        """Switch to contesting mode, hovering just outside `battery`."""
+    def _enter_contest(self, battery, contesting_agents=None) -> bool:
+        """Switch to contesting mode, hovering just outside `battery`.
+        Returns False if the battery is at capacity (agent dies instead)."""
+        if contesting_agents:
+            current = sum(
+                1 for other in contesting_agents
+                if other is not self
+                and getattr(other, 'contesting', False)
+                and getattr(other, '_contest_battery', None) is battery
+            )
+            if current >= self.MAX_CONTENDING:
+                return False
         self.contesting      = True
         self._contest_battery = battery
         self._hover_base     = (self.x, self.y)
@@ -320,7 +342,8 @@ class DirectedAgent:
         self._shot_cd    = self.SHOT_COOLDOWN // 2   # first shot comes quickly
 
     def update(self, link_pixels: set, node_pixels: set,
-               battery_pixel_map: dict | None = None) -> None:
+               battery_pixel_map: dict | None = None,
+               contesting_agents: list | None = None) -> None:
         if not self.alive:
             return
 
@@ -347,7 +370,8 @@ class DirectedAgent:
                 return
             if (nx, ny) in battery_pixel_map:
                 # Reached a battery — stay here and start contesting
-                self._enter_contest(battery_pixel_map[(nx, ny)])
+                if not self._enter_contest(battery_pixel_map[(nx, ny)], contesting_agents):
+                    self.alive = False
                 return
 
             self._trail.append((self.x, self.y))

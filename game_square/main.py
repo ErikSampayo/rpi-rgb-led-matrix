@@ -30,10 +30,13 @@ def _dim(color: Color, factor: float) -> Color:
 PLAYER_INDICES = [0, 1]   # red, blue
 
 # Key bindings: (up, down, left, right, agent_mode, link_mode)
-import pygame
+from game_square.keys import (
+    K_w, K_s, K_a, K_d, K_e, K_f,
+    K_UP, K_DOWN, K_LEFT, K_RIGHT, K_n, K_m,
+)
 PLAYER_KEYS = [
-    (pygame.K_w, pygame.K_s, pygame.K_a, pygame.K_d, pygame.K_e, pygame.K_f),
-    (pygame.K_UP, pygame.K_DOWN, pygame.K_LEFT, pygame.K_RIGHT, pygame.K_n, pygame.K_m),
+    (K_w, K_s, K_a, K_d, K_e, K_f),
+    (K_UP, K_DOWN, K_LEFT, K_RIGHT, K_n, K_m),
 ]
 
 WIRE_STEP_TICKS = 3   # ticks between each pixel step while key held

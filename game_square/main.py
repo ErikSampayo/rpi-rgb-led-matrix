@@ -144,6 +144,14 @@ class WireBuilder:
             else:
                 continue
             if (nx, ny) in cps:
+                # Batteries can only have one wire connected at a time
+                if isinstance(obj, EnergyNode):
+                    has_link = any(
+                        lk.source is obj or lk.destination is obj
+                        for lk in links
+                    )
+                    if has_link:
+                        return 'hit_node'
                 self.path.append((nx, ny))
                 return 'connected'
 

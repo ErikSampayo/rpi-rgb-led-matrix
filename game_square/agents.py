@@ -10,7 +10,6 @@ for checking collisions across all active agents.
 """
 
 import math
-import random
 from game_square.display.base import Display, Color
 
 
@@ -88,23 +87,33 @@ class Agent:
                     perimeter.add(candidate)
         return list(perimeter)
 
-    def _bounce(self, from_x: int, from_y: int) -> None:
-        """Bounce off a full battery in a random direction (not towards it)."""
-        towards = self._dir
-        dirs = [(0, -1), (0, 1), (-1, 0), (1, 0)]
-        if towards in dirs:
-            dirs.remove(towards)
-        new_dir = random.choice(dirs)
+    def _bounce(self, from_x: int, from_y: int, battery,
+                battery_pixel_map: dict | None = None) -> None:
+        """Bounce off a full battery, moving directly away from its center.
+        The new path stops one step before another battery (so the agent
+        can contest it) or at the grid edge."""
+        dx = from_x - battery.x
+        dy = from_y - battery.y
+        if abs(dx) >= abs(dy):
+            bounce_dir = (1 if dx >= 0 else -1, 0)
+        else:
+            bounce_dir = (0, 1 if dy >= 0 else -1)
+
         new_path = [(from_x, from_y)]
-        nx, ny = from_x + new_dir[0], from_y + new_dir[1]
+        nx, ny = from_x + bounce_dir[0], from_y + bounce_dir[1]
         while 0 <= nx < 64 and 0 <= ny < 64:
+            # Stop one step before a battery so _enter_contest can find it
+            ahead = (nx + bounce_dir[0], ny + bounce_dir[1])
+            if battery_pixel_map and ahead in battery_pixel_map:
+                new_path.append((nx, ny))
+                break
             new_path.append((nx, ny))
-            nx += new_dir[0]
-            ny += new_dir[1]
+            nx += bounce_dir[0]
+            ny += bounce_dir[1]
         self.path = new_path
         self.pos = 0.0
         self.x, self.y = from_x, from_y
-        self._dir = new_dir
+        self._dir = bounce_dir
         self.bounced = True
 
     def _enter_contest(self, battery_pixel_map: dict,
@@ -137,7 +146,7 @@ class Agent:
                 and getattr(other, 'color', None) == self.color
             )
             if current >= self.MAX_CONTENDING:
-                self._bounce(hx, hy)
+                self._bounce(hx, hy, battery, battery_pixel_map)
                 return False
         # Choose a hover position on the battery perimeter with fewest occupants.
         natural_hover = (hx, hy)
@@ -341,13 +350,14 @@ class DirectedAgent:
         if not self.contesting:
             self._dir = direction
 
-    def _bounce(self) -> None:
-        """Bounce off a full battery in a random direction (not towards it)."""
-        towards = self._dir
-        dirs = [(0, -1), (0, 1), (-1, 0), (1, 0)]
-        if towards in dirs:
-            dirs.remove(towards)
-        self._dir = random.choice(dirs)
+    def _bounce(self, battery) -> None:
+        """Bounce off a full battery, moving directly away from its center."""
+        dx = self.x - battery.x
+        dy = self.y - battery.y
+        if abs(dx) >= abs(dy):
+            self._dir = (1 if dx >= 0 else -1, 0)
+        else:
+            self._dir = (0, 1 if dy >= 0 else -1)
         self.bounced = True
 
     def _enter_contest(self, battery, contesting_agents=None) -> bool:
@@ -362,7 +372,7 @@ class DirectedAgent:
                 and getattr(other, 'color', None) == self.color
             )
             if current >= self.MAX_CONTENDING:
-                self._bounce()
+                self._bounce(battery)
                 return False
         self.contesting      = True
         self._contest_battery = battery

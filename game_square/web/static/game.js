@@ -13,6 +13,8 @@
 
   let ws = null;
   let role = "spectator";
+  let imageData = ctx.createImageData(64, 64);
+  let awaitingFullFrame = false;
 
   function connect() {
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
@@ -41,13 +43,34 @@
           }
         } else if (msg.type === "reset") {
           ctx.clearRect(0, 0, 64, 64);
+          imageData = ctx.createImageData(64, 64);
+          awaitingFullFrame = true;
         }
       } else {
         const frame = new Uint8Array(event.data);
-        if (frame.length !== 64 * 64 * 4) return;
-        const imageData = ctx.createImageData(64, 64);
-        imageData.data.set(frame);
-        ctx.putImageData(imageData, 0, 0);
+        if (frame.length < 1) return;
+        const flag = frame[0];
+
+        if (flag === 0x00) {
+          if (frame.length !== 1 + 64 * 64 * 4) return;
+          imageData.data.set(frame.subarray(1));
+          ctx.putImageData(imageData, 0, 0);
+          awaitingFullFrame = false;
+        } else if (flag === 0x01 && !awaitingFullFrame) {
+          const count = (frame[1] << 8) | frame[2];
+          let offset = 3;
+          for (let i = 0; i < count; i++) {
+            const x = frame[offset];
+            const y = frame[offset + 1];
+            const idx = (y * 64 + x) * 4;
+            imageData.data[idx]     = frame[offset + 2];
+            imageData.data[idx + 1] = frame[offset + 3];
+            imageData.data[idx + 2] = frame[offset + 4];
+            imageData.data[idx + 3] = 255;
+            offset += 5;
+          }
+          ctx.putImageData(imageData, 0, 0);
+        }
       }
     };
 

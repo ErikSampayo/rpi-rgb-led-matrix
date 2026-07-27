@@ -38,6 +38,11 @@ class WebDisplay(Display):
     ``pump_events()`` (drains input) at ~25 fps.  The server thread
     pushes input events into ``input_queue`` and drains ``frame_queue``
     for broadcasting.
+    Frame protocol (binary WebSocket messages):
+      0x00 + RGBA[16384]  — full frame (first frame, after reset, or when
+                            delta would be larger than full frame)
+      0x01 + count[2] + count × (x, y, r, g, b) — delta frame
+      0x02                 — no change since last frame
     """
 
     def __init__(self):
@@ -55,6 +60,8 @@ class WebDisplay(Display):
         self._held_keys: set[int] = set()
         self._frame_count = 0
         self._should_reset = False
+        self._prev_buf: list[list[Color]] | None = None
+        self._full_frame_pending = True
 
     # ------------------------------------------------------------------
     # Display interface
@@ -68,8 +75,23 @@ class WebDisplay(Display):
         self._buf = [[BLACK] * self.WIDTH for _ in range(self.HEIGHT)]
 
     def render(self) -> None:
-        buf = bytearray(self.WIDTH * self.HEIGHT * 4)
-        i = 0
+        if self._full_frame_pending or self._prev_buf is None:
+            msg = self._build_full_frame()
+        else:
+            msg = self._build_delta()
+
+        try:
+            self.frame_queue.put_nowait(msg)
+        except queue.Full:
+            pass
+
+        self._prev_buf = [list(row) for row in self._buf]
+        self._full_frame_pending = False
+
+    def _build_full_frame(self) -> bytes:
+        buf = bytearray(1 + self.WIDTH * self.HEIGHT * 4)
+        buf[0] = 0x00
+        i = 1
         for y in range(self.HEIGHT):
             for x in range(self.WIDTH):
                 c = self._buf[y][x]
@@ -78,10 +100,38 @@ class WebDisplay(Display):
                 buf[i + 2] = c.b
                 buf[i + 3] = 255
                 i += 4
-        try:
-            self.frame_queue.put_nowait(bytes(buf))
-        except queue.Full:
-            pass
+        return bytes(buf)
+
+    def _build_delta(self) -> bytes:
+        changed: list[tuple[int, int, Color]] = []
+        for y in range(self.HEIGHT):
+            cur_row = self._buf[y]
+            prev_row = self._prev_buf[y]
+            for x in range(self.WIDTH):
+                if cur_row[x] != prev_row[x]:
+                    changed.append((x, y, cur_row[x]))
+
+        if not changed:
+            return b'\x02'
+
+        delta_size = 3 + len(changed) * 5
+        full_size = 1 + self.WIDTH * self.HEIGHT * 4
+        if delta_size >= full_size:
+            return self._build_full_frame()
+
+        buf = bytearray(delta_size)
+        buf[0] = 0x01
+        buf[1] = (len(changed) >> 8) & 0xFF
+        buf[2] = len(changed) & 0xFF
+        i = 3
+        for x, y, c in changed:
+            buf[i]     = x
+            buf[i + 1] = y
+            buf[i + 2] = c.r
+            buf[i + 3] = c.g
+            buf[i + 4] = c.b
+            i += 5
+        return bytes(buf)
 
     def pump_events(self) -> bool:
         if self._should_reset:
@@ -120,3 +170,4 @@ class WebDisplay(Display):
 
     def request_reset(self) -> None:
         self._should_reset = True
+        self._full_frame_pending = True

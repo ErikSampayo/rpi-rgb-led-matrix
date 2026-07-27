@@ -56,6 +56,7 @@ class WebDisplay(Display):
 
         self.frame_queue: queue.Queue = queue.Queue(maxsize=4)
         self.input_queue: queue.Queue = queue.Queue()
+        self.sound_queue: queue.Queue = queue.Queue()
 
         self._held_keys: set[int] = set()
         self._frame_count = 0
@@ -167,6 +168,9 @@ class WebDisplay(Display):
 
     def push_input(self, kind: str, keycode: int) -> None:
         self.input_queue.put((kind, keycode))
+
+    def push_sound(self, name: str) -> None:
+        self.sound_queue.put(name)
 
     def request_reset(self) -> None:
         self._should_reset = True

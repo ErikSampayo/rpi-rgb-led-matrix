@@ -525,9 +525,11 @@ def demo(display) -> None:
                     wire_builders[i].path = []
                 wire_preview_dir[i] = None
                 player_agent[i] = None
+                display.push_sound("toggle")
             if k_link in keys_pressed:
                 player_mode[i] = 'link'
                 wire_preview_dir[i] = None
+                display.push_sound("toggle")
                 if player_agent[i] and player_agent[i].alive:
                     player_agent[i].derezz()
                 player_agent[i] = None
@@ -606,6 +608,7 @@ def demo(display) -> None:
                         if new_link:
                             links.append(new_link)
                             _update_power(links, tick)
+                            display.push_sound("connect")
                         wb.active = False
                         wb.path = []
                     elif result == 'hit_wire':
@@ -681,6 +684,7 @@ def demo(display) -> None:
                 if want_dir is not None and arm.can_spawn() and want_dir not in wired:
                     arm.consume_spawn()
                     arm.trigger_spawn_flash()
+                    display.push_sound("spawn")
                     chosen_tip = DIR_TIP[want_dir]
                     sx, sy = arm.x + chosen_tip[0], arm.y + chosen_tip[1]
                     pa = DirectedAgent(sx, sy, bases[i].color)
@@ -750,6 +754,7 @@ def demo(display) -> None:
                 links = [lk for lk in links
                          if lk.source is not node and lk.destination is not node]
                 _update_power(links, tick)
+                display.push_sound("capture")
 
         # Update directed (player-controlled) agents
         for da in directed:
@@ -797,6 +802,7 @@ def demo(display) -> None:
                 if path:
                     arm.consume_spawn()
                     arm.trigger_spawn_flash()
+                    display.push_sound("spawn")
                     agents.append(Agent(path=path, color=arm.color))
                     armory_rotation[arm] = (idx + 1) % 4
                     break
@@ -804,7 +810,11 @@ def demo(display) -> None:
         all_contesting = list(agents) + list(directed)
         for agent in agents:
             agent.update(link_px_set, battery_pixel_map, all_contesting)
+        alive_before = sum(1 for a in agents + directed if a.alive)
         check_collisions(agents + directed)
+        alive_after = sum(1 for a in agents + directed if a.alive)
+        if alive_after < alive_before:
+            display.push_sound("derezz")
         agents = [a for a in agents if a.alive]
         # Sync player_agent refs
         for i in range(len(player_agent)):

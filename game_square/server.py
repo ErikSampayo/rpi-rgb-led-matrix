@@ -141,6 +141,18 @@ def broadcast_frames():
             except Exception:
                 pass
 
+    while True:
+        try:
+            name = display.sound_queue.get_nowait()
+        except Exception:
+            break
+        msg = json.dumps({"type": "sound", "name": name})
+        for client in list(clients):
+            try:
+                client.write_message(msg)
+            except Exception:
+                pass
+
 
 # ---------------------------------------------------------------------------
 # Static file handlers

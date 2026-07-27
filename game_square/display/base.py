@@ -58,3 +58,7 @@ class Display(ABC):
         for y in range(self.HEIGHT):
             self.set_pixel(0, y, color)
             self.set_pixel(self.WIDTH - 1, y, color)
+
+    def push_sound(self, name: str) -> None:
+        """Emit a sound event.  No-op on base class; overridden by WebDisplay."""
+        pass

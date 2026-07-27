@@ -16,6 +16,57 @@
   let imageData = ctx.createImageData(64, 64);
   let awaitingFullFrame = false;
 
+  // ------------------------------------------------------------------
+  // Web Audio API synthesizer
+  // ------------------------------------------------------------------
+
+  let audioCtx = null;
+
+  function initAudio() {
+    if (audioCtx) return;
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  }
+
+  function tone(opts) {
+    if (!audioCtx) return;
+    const t = audioCtx.currentTime;
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = opts.type || "square";
+    osc.frequency.setValueAtTime(opts.freq, t);
+    if (opts.freqEnd) {
+      osc.frequency.exponentialRampToValueAtTime(
+        Math.max(1, opts.freqEnd), t + opts.dur
+      );
+    }
+    const vol = opts.vol || 0.15;
+    gain.gain.setValueAtTime(vol, t);
+    gain.gain.exponentialRampToValueAtTime(0.001, t + opts.dur);
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+    osc.start(t);
+    osc.stop(t + opts.dur);
+  }
+
+  const SOUNDS = {
+    spawn:    () => tone({ type: "square",   freq: 200,  freqEnd: 700,  dur: 0.12, vol: 0.12 }),
+    connect:  () => tone({ type: "square",   freq: 500,  freqEnd: 900,  dur: 0.06, vol: 0.10 }),
+    derezz:   () => tone({ type: "sawtooth", freq: 800,  freqEnd: 80,   dur: 0.30, vol: 0.15 }),
+    capture:  () => {
+      tone({ type: "square", freq: 400, dur: 0.10, vol: 0.14 });
+      setTimeout(() => tone({ type: "square", freq: 600, dur: 0.15, vol: 0.14 }), 90);
+    },
+    toggle:   () => tone({ type: "sine",     freq: 300,  dur: 0.03, vol: 0.08 }),
+    reset:    () => tone({ type: "sawtooth", freq: 600,  freqEnd: 50,   dur: 0.40, vol: 0.12 }),
+  };
+
+  function playSound(name) {
+    if (!audioCtx) initAudio();
+    if (audioCtx.state === "suspended") audioCtx.resume();
+    const fn = SOUNDS[name];
+    if (fn) fn();
+  }
+
   function connect() {
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
     const url = `${proto}//${location.host}/ws`;
@@ -45,6 +96,9 @@
           ctx.clearRect(0, 0, 64, 64);
           imageData = ctx.createImageData(64, 64);
           awaitingFullFrame = true;
+          playSound("reset");
+        } else if (msg.type === "sound") {
+          playSound(msg.name);
         }
       } else {
         const frame = new Uint8Array(event.data);
@@ -91,6 +145,7 @@
   }
 
   document.addEventListener("keydown", (e) => {
+    if (!audioCtx) initAudio();
     if (GAME_KEYS.has(e.code)) {
       e.preventDefault();
       if (!e.repeat) {
@@ -107,6 +162,7 @@
   });
 
   document.getElementById("reset-btn").addEventListener("click", () => {
+    if (!audioCtx) initAudio();
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: "reset" }));
     }

@@ -998,16 +998,19 @@ def demo(display) -> None:
 
         # Highlight valid destination connection points while a wire is
         # being built: free batteries and the builder's own armory tips
-        # that aren't already wired.  Subtle dim pulse in the builder's
-        # colour; batteries and armories pulse at different intervals so
-        # they don't strobe in unison.
+        # that aren't already wired.  Neutral batteries flash yellow so
+        # both players see the same highlight; armory tips use the
+        # builder's colour.  Different pulse intervals avoid sync strobe.
+        from game_square.display.base import YELLOW
         for i, wb in enumerate(wire_builders):
             if not wb.active:
                 continue
             c = bases[i].color
-            # Batteries: slow gentle pulse
+            # Batteries: yellow, slow gentle pulse
             b_pulse = 0.25 + 0.15 * (0.5 + 0.5 * math.sin(tick * 0.12))
-            bc = Color(int(c.r * b_pulse), int(c.g * b_pulse), int(c.b * b_pulse))
+            bc = Color(int(YELLOW.r * b_pulse),
+                       int(YELLOW.g * b_pulse),
+                       int(YELLOW.b * b_pulse))
             for node in nodes:
                 has_link = any(
                     lk.source is node or lk.destination is node
@@ -1015,7 +1018,7 @@ def demo(display) -> None:
                 )
                 if not has_link:
                     display.set_pixel(*node.connection_point, bc)
-            # Own armory tips: slightly faster, different phase
+            # Own armory tips: player colour, slightly faster, different phase
             a_pulse = 0.25 + 0.15 * (0.5 + 0.5 * math.sin(tick * 0.18 + 1.2))
             ac = Color(int(c.r * a_pulse), int(c.g * a_pulse), int(c.b * a_pulse))
             arm = armories[i]

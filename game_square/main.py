@@ -485,8 +485,12 @@ def demo(display) -> None:
     player_agent: list[DirectedAgent | None] = [None, None]
     # Chosen launch direction while in preview (before agent spawns)
     player_preview_dir: list[tuple[int,int]] = [(0, -1), (0, -1)]
-    # Wire preview direction: first press aims, second press starts
-    wire_preview_dir: list[tuple[int,int] | None] = [None, None]
+    # Wire preview direction (always set, like player_preview_dir; first
+    # press aims/primes, second press of same direction starts the wire)
+    wire_preview_dir: list[tuple[int,int]] = [(0, -1), (0, -1)]
+    # Wire primed: True after the first directional keypress (waiting for
+    # the second press of the same direction to start the wire).
+    wire_primed = [False, False]
     # Pin rotation per player: {direction: 0|1} — alternates which of the
     # two CPU pins on a side gets used next.
     wire_pin_idx: list[dict[tuple[int,int], int]] = [{}, {}]
@@ -534,12 +538,12 @@ def demo(display) -> None:
                 if wire_builders[i].active:
                     wire_builders[i].active = False
                     wire_builders[i].path = []
-                wire_preview_dir[i] = None
+                wire_primed[i] = False
                 player_agent[i] = None
                 display.push_sound("toggle")
             if k_link in keys_pressed:
                 player_mode[i] = 'link'
-                wire_preview_dir[i] = None
+                wire_primed[i] = False
                 display.push_sound("toggle")
                 if player_agent[i] and player_agent[i].alive:
                     player_agent[i].derezz()
@@ -594,16 +598,17 @@ def demo(display) -> None:
                 elif right in keys_pressed: press_dir = ( 1,  0)
 
                 if press_dir is not None:
-                    if wire_preview_dir[i] == press_dir:
+                    if wire_primed[i] and wire_preview_dir[i] == press_dir:
                         # Second press — start the wire
                         pidx = wire_pin_idx[i].get(press_dir, 0)
                         if wb.start(press_dir, links, pidx):
                             wire_pin_idx[i][press_dir] = (pidx + 1) % 2
                             display.push_sound(f"wire_start_{i}")
-                        wire_preview_dir[i] = None
+                        wire_primed[i] = False
                     else:
                         # First press or different direction — set preview
                         wire_preview_dir[i] = press_dir
+                        wire_primed[i] = True
             else:
                 # Wire active: grow with held keys
                 direction = None
@@ -856,51 +861,84 @@ def demo(display) -> None:
             if wb.active:
                 wb.draw(display, wb.base.color)
 
-        # Draw wire preview pips on available CPU pins
+        # Draw wire bip on a CPU pin (always visible in link mode when no
+        # wire is actively growing).  Mirrors agent mode: wire_preview_dir
+        # is always set (defaults to up); wire_primed distinguishes the
+        # slow dim unprimed blink from the fast bright primed blink.
+        # Falls back to another direction if the current one's pins are
+        # all used.
         for i, wb in enumerate(wire_builders):
-            if player_mode[i] == 'link' and not wb.active and wire_preview_dir[i] is not None:
-                d = wire_preview_dir[i]
-                base = bases[i]
-                all_pins = base.connection_points
-                used = {lk.path[0] for lk in links if lk.source is base}
-                available = [idx for idx in DIR_PIN_INDICES[d] if all_pins[idx] not in used]
-                if available:
-                    pidx = wire_pin_idx[i].get(d, 0)
-                    chosen_idx = available[pidx % len(available)] if len(available) > 1 else available[0]
-                    pin = all_pins[chosen_idx]
-                    blink = (tick // 6) % 2 == 0
-                    bright = 0.8 if blink else 0.2
-                    c = base.color
-                    display.set_pixel(*pin,
-                        Color(int(c.r * bright), int(c.g * bright), int(c.b * bright)))
+            if player_mode[i] != 'link' or wb.active:
+                continue
+            base = bases[i]
+            all_pins = base.connection_points
+            used = {lk.path[0] for lk in links if lk.source is base}
+            primed = wire_primed[i]
+            # Pick the direction to show the bip on
+            d = wire_preview_dir[i]
+            available = [idx for idx in DIR_PIN_INDICES[d]
+                         if all_pins[idx] not in used]
+            if not available:
+                # Current direction's pins are full — fall back to the
+                # first direction with a free pin
+                d = next((dd for dd in SPAWN_DIRS
+                          if any(all_pins[idx] not in used
+                                 for idx in DIR_PIN_INDICES[dd])), None)
+                if d is None:
+                    continue
+                available = [idx for idx in DIR_PIN_INDICES[d]
+                             if all_pins[idx] not in used]
+            pidx = wire_pin_idx[i].get(d, 0)
+            chosen_idx = (available[pidx % len(available)]
+                          if len(available) > 1 else available[0])
+            pin = all_pins[chosen_idx]
+            if primed:
+                blink = (tick // 3) % 2 == 0
+                bright = 1.0 if blink else 0.3
+                c = Color(
+                    min(255, int(base.color.r * bright + 60)),
+                    min(255, int(base.color.g * bright + 60)),
+                    min(255, int(base.color.b * bright + 60)),
+                )
+            else:
+                blink = (tick // 8) % 2 == 0
+                bright = 0.5 if blink else 0.1
+                c = Color(int(base.color.r * bright),
+                          int(base.color.g * bright),
+                          int(base.color.b * bright))
+            display.set_pixel(*pin, c)
 
         for node in nodes:
             node.draw(display, tick)
         for arm in armories:
             arm.draw(display, tick)
-        # Draw agent preview pips (blinking pixel at chosen tip, no live agent)
+        # Draw agent bip on an armory tip (always visible in agent mode
+        # when no scout is alive).  Unprimed (waiting) = slow dim blink.
+        # Primed (armed, user aiming) = fast bright blink with white tint.
         for i, arm in enumerate(armories):
-            if player_mode[i] == 'agent':
-                pa = player_agent[i]
-                if pa is None or not pa.alive:
-                    tip = DIR_TIP[player_preview_dir[i]]
-                    px, py = arm.x + tip[0], arm.y + tip[1]
-                    c = bases[i].color
-                    if player_armed[i]:
-                        # Armed: fast blink + white tint
-                        blink = (tick // 3) % 2 == 0
-                        bright = 1.0 if blink else 0.4
-                        c = Color(
-                            min(255, int(c.r * bright + 60)),
-                            min(255, int(c.g * bright + 60)),
-                            min(255, int(c.b * bright + 60)),
-                        )
-                    else:
-                        # Waiting: slow blink, dimmer
-                        blink = (tick // 6) % 2 == 0
-                        bright = 0.7 if blink else 0.2
-                        c = Color(int(c.r * bright), int(c.g * bright), int(c.b * bright))
-                    display.set_pixel(px, py, c)
+            if player_mode[i] != 'agent':
+                continue
+            pa = player_agent[i]
+            if pa is not None and pa.alive:
+                continue
+            tip = DIR_TIP[player_preview_dir[i]]
+            px, py = arm.x + tip[0], arm.y + tip[1]
+            c = bases[i].color
+            if player_armed[i]:
+                # Primed (armed): fast blink + white tint
+                blink = (tick // 3) % 2 == 0
+                bright = 1.0 if blink else 0.4
+                c = Color(
+                    min(255, int(c.r * bright + 60)),
+                    min(255, int(c.g * bright + 60)),
+                    min(255, int(c.b * bright + 60)),
+                )
+            else:
+                # Unprimed (waiting): slow blink, dim
+                blink = (tick // 8) % 2 == 0
+                bright = 0.5 if blink else 0.1
+                c = Color(int(c.r * bright), int(c.g * bright), int(c.b * bright))
+            display.set_pixel(px, py, c)
         for base in bases:
             base.draw(display, tick)
 

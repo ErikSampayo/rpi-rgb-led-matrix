@@ -678,6 +678,7 @@ def demo(display) -> None:
                             wired.add(d)
                         break
             armory_wired_dirs[arm] = wired
+            arm._wired_dirs = wired
 
         # --- Credit armory energy from inbound pulses ---
         # Done early so the player's scout gets first dibs on energy

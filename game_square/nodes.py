@@ -373,31 +373,6 @@ class Armory:
             display.set_pixel(self.x, self.y, _dim(self.color, brightness))
             return
 
-        diss = getattr(self, '_dissipation_ticks', 0)
-        if diss > 0:
-            self._dissipation_ticks = diss - 1
-            # Venting puff: shell pixels glow dim white-grey, radiating
-            # outward from centre and fading over the duration.
-            frac = diss / self.DISSIPATION_DURATION     # 1.0 → 0.0
-            vent = Color(120, 120, 130)
-            # Centre brightens then fades
-            c_bright = 0.5 * frac
-            display.set_pixel(self.x, self.y, _dim(vent, c_bright))
-            # Shell: outer pixels brighter early, inner later (radiating out)
-            for dx, dy in self._SHELL:
-                dist = abs(dx) + abs(dy)            # 1 or 2
-                # outer pixels (dist 2) lead the wave, inner (dist 1) lag
-                wave = max(0.0, frac - (0.0 if dist == 2 else 0.25))
-                display.set_pixel(self.x + dx, self.y + dy,
-                                  _dim(vent, 0.45 * wave))
-            # Brief sparks 1px beyond the tips during the first half
-            if frac > 0.5:
-                spark_b = 0.35 * (frac - 0.5) * 2.0
-                for tdx, tdy in self._TIPS:
-                    display.set_pixel(self.x + tdx, self.y + tdy,
-                                      _dim(vent, spark_b))
-            return
-
         # Shell pixels: light up one pip per credit, cap at SPAWN_COST.
         # When full (≥ SPAWN_COST), pulse the centre to signal "ready".
         filled = min(self.energy, self.SPAWN_COST)
@@ -420,3 +395,23 @@ class Armory:
             if ready else 0.25 + 0.15 * (0.5 + 0.5 * math.sin(tick * 0.07))
         )
         display.set_pixel(self.x, self.y, _dim(self.color, centre_bright))
+
+        # Steam: while dissipating, emit dim grey puffs from each free
+        # (unwired) tip.  The armory body keeps its normal colours.
+        diss = getattr(self, '_dissipation_ticks', 0)
+        if diss > 0:
+            self._dissipation_ticks = diss - 1
+            frac = diss / self.DISSIPATION_DURATION     # 1.0 → 0.0
+            vent = Color(110, 110, 120)
+            wired = getattr(self, '_wired_dirs', set())
+            for tdx, tdy in self._TIPS:
+                d = (1 if tdx > 0 else (-1 if tdx < 0 else 0),
+                     1 if tdy > 0 else (-1 if tdy < 0 else 0))
+                if d in wired:
+                    continue
+                # 2 pixels of steam drifting outward from the tip
+                for step in (1, 2):
+                    wave = max(0.0, frac - (0.0 if step == 1 else 0.2))
+                    px = self.x + tdx + d[0] * step
+                    py = self.y + tdy + d[1] * step
+                    display.set_pixel(px, py, _dim(vent, 0.5 * wave))

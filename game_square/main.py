@@ -1006,8 +1006,8 @@ def demo(display) -> None:
             if not wb.active:
                 continue
             c = bases[i].color
-            # Batteries: yellow, slow gentle pulse
-            b_pulse = 0.25 + 0.15 * (0.5 + 0.5 * math.sin(tick * 0.12))
+            # Batteries: yellow, slow fade in/out of black
+            b_pulse = 0.14 * (0.5 + 0.5 * math.sin(tick * 0.10))
             bc = Color(int(YELLOW.r * b_pulse),
                        int(YELLOW.g * b_pulse),
                        int(YELLOW.b * b_pulse))
@@ -1019,7 +1019,7 @@ def demo(display) -> None:
                 if not has_link:
                     display.set_pixel(*node.connection_point, bc)
             # Own armory tips: player colour, slightly faster, different phase
-            a_pulse = 0.25 + 0.15 * (0.5 + 0.5 * math.sin(tick * 0.18 + 1.2))
+            a_pulse = 0.14 * (0.5 + 0.5 * math.sin(tick * 0.15 + 1.2))
             ac = Color(int(c.r * a_pulse), int(c.g * a_pulse), int(c.b * a_pulse))
             arm = armories[i]
             wired = armory_wired_dirs.get(arm, set())

@@ -537,17 +537,24 @@ def demo(display) -> None:
         for i, arm in enumerate(armories):
             _, _, _, _, k_agent, k_link = PLAYER_KEYS[i]
             if k_agent in keys_pressed:
-                # Enter agent mode and arm for a new scout.  Releasing
-                # the current scout puts it on auto-pilot.
-                player_mode[i] = 'agent'
-                player_armed[i] = True
-                player_aimed[i] = False
-                if wire_builders[i].active:
-                    wire_builders[i].active = False
-                    wire_builders[i].path = []
-                wire_primed[i] = False
-                player_agent[i] = None
-                display.push_sound("toggle")
+                if player_mode[i] == 'agent':
+                    # Already in agent mode — second press primes the armory
+                    if not player_armed[i]:
+                        player_armed[i] = True
+                        player_aimed[i] = False
+                        display.push_sound("toggle")
+                else:
+                    # Enter agent mode in waiting state (dim bip, not armed).
+                    # Player must press E again to prime before a scout can spawn.
+                    player_mode[i] = 'agent'
+                    player_armed[i] = False
+                    player_aimed[i] = False
+                    if wire_builders[i].active:
+                        wire_builders[i].active = False
+                        wire_builders[i].path = []
+                    wire_primed[i] = False
+                    player_agent[i] = None
+                    display.push_sound("toggle")
             if k_link in keys_pressed:
                 if player_mode[i] == 'link':
                     if not wire_builders[i].active:

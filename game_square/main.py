@@ -58,6 +58,7 @@ class WireBuilder:
         self.path: list[tuple[int,int]] = []
         self.active = False         # True while growing
         self._cooldown = 0          # ticks until next step allowed
+        self.direction: tuple[int,int] = (0, 0)  # current heading (snake-style)
 
     def _node_pixels(self, connectables) -> set[tuple[int,int]]:
         """All pixels occupied by any node body (used for collision, excludes connection points)."""
@@ -112,6 +113,7 @@ class WireBuilder:
         self.path = [chosen]
         self.active = True
         self._cooldown = 0
+        self.direction = direction
         return True
 
     def step(self, direction: tuple[int,int], links: list, connectables) -> str:
@@ -619,16 +621,22 @@ def demo(display) -> None:
                         wire_preview_dir[i] = press_dir
                         wire_primed[i] = True
             else:
-                # Wire active: grow with held keys
-                direction = None
-                if held is not None:
-                    if   held[up]:    direction = ( 0, -1)
-                    elif held[down]:  direction = ( 0,  1)
-                    elif held[left]:  direction = (-1,  0)
-                    elif held[right]: direction = ( 1,  0)
+                # Wire active (snake-style): keep growing in the current
+                # direction automatically; a fresh keypress changes heading.
+                new_dir = None
+                if   up in keys_pressed:    new_dir = ( 0, -1)
+                elif down in keys_pressed:  new_dir = ( 0,  1)
+                elif left in keys_pressed:  new_dir = (-1,  0)
+                elif right in keys_pressed: new_dir = ( 1,  0)
 
-                if direction is not None and wb._cooldown <= 0:
-                    result = wb.step(direction, links, connectables)
+                if new_dir is not None:
+                    # Ignore 180° reversals (would hit the wire's own neck)
+                    cur = wb.direction
+                    if (new_dir[0] + cur[0], new_dir[1] + cur[1]) != (0, 0):
+                        wb.direction = new_dir
+
+                if wb._cooldown <= 0:
+                    result = wb.step(wb.direction, links, connectables)
                     if result == 'connected':
                         new_link = wb.commit(connectables, links, tick)
                         if new_link:

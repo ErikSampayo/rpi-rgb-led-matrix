@@ -931,6 +931,34 @@ def demo(display) -> None:
             node.draw(display, tick)
         for arm in armories:
             arm.draw(display, tick)
+
+        # Highlight valid destination connection points while a wire is
+        # being built: free batteries and the builder's own armory tips
+        # that aren't already wired.  Blinks in the builder's colour.
+        for i, wb in enumerate(wire_builders):
+            if not wb.active:
+                continue
+            c = bases[i].color
+            blink = (tick // 5) % 2 == 0
+            bright = 0.9 if blink else 0.3
+            hc = Color(int(c.r * bright), int(c.g * bright), int(c.b * bright))
+            # Free batteries
+            for node in nodes:
+                has_link = any(
+                    lk.source is node or lk.destination is node
+                    for lk in links
+                )
+                if not has_link:
+                    display.set_pixel(*node.connection_point, hc)
+            # Own armory tips that aren't already wired
+            arm = armories[i]
+            wired = armory_wired_dirs.get(arm, set())
+            for cp in arm.connection_points:
+                offset = (cp[0] - arm.x, cp[1] - arm.y)
+                d = TIP_TO_DIR.get(offset)
+                if d in wired:
+                    continue
+                display.set_pixel(*cp, hc)
         # Draw agent bip on an armory tip (always visible in agent mode
         # when no scout is alive).  Unprimed (waiting) = slow dim blink.
         # Primed (armed, user aiming) = fast bright blink with white tint.

@@ -533,28 +533,45 @@ def demo(display) -> None:
         keys_pressed = getattr(display, 'keys_pressed', [])
         held = getattr(display, 'keys_held', None)
 
+        # --- Determine which armory tips are occupied by wires ---
+        # (Computed early so mode-toggle and steering can use it.)
+        armory_wired_dirs: dict = {}
+        for arm in armories:
+            wired = set()
+            for lk in links:
+                if lk.destination is not arm and lk.source is not arm:
+                    continue
+                for cp in arm.connection_points:
+                    if cp in lk.path:
+                        offset = (cp[0] - arm.x, cp[1] - arm.y)
+                        d = TIP_TO_DIR.get(offset)
+                        if d:
+                            wired.add(d)
+                        break
+            armory_wired_dirs[arm] = wired
+            arm._wired_dirs = wired
+
         # --- Mode toggle ---
         for i, arm in enumerate(armories):
             _, _, _, _, k_agent, k_link = PLAYER_KEYS[i]
             if k_agent in keys_pressed:
-                if player_mode[i] == 'agent':
-                    # Already in agent mode — second press primes the armory
-                    if not player_armed[i]:
-                        player_armed[i] = True
-                        player_aimed[i] = False
-                        display.push_sound("toggle")
-                else:
-                    # Enter agent mode in waiting state (dim bip, not armed).
-                    # Player must press E again to prime before a scout can spawn.
-                    player_mode[i] = 'agent'
-                    player_armed[i] = False
-                    player_aimed[i] = False
-                    if wire_builders[i].active:
-                        wire_builders[i].active = False
-                        wire_builders[i].path = []
-                    wire_primed[i] = False
-                    player_agent[i] = None
-                    display.push_sound("toggle")
+                # Enter agent mode in waiting state (dim bip, not primed).
+                # Direction keys handle aiming + priming (like wire mode).
+                player_mode[i] = 'agent'
+                player_armed[i] = False
+                player_aimed[i] = False
+                # Default bip to the first free (unwired) tip
+                wired = armory_wired_dirs[arm]
+                player_preview_dir[i] = next(
+                    (d for d in SPAWN_DIRS if d not in wired),
+                    player_preview_dir[i],
+                )
+                if wire_builders[i].active:
+                    wire_builders[i].active = False
+                    wire_builders[i].path = []
+                wire_primed[i] = False
+                player_agent[i] = None
+                display.push_sound("toggle")
             if k_link in keys_pressed:
                 if player_mode[i] == 'link':
                     if not wire_builders[i].active:
@@ -675,23 +692,6 @@ def demo(display) -> None:
             if wb._cooldown > 0:
                 wb._cooldown -= 1
 
-        # --- Determine which armory tips are occupied by wires ---
-        armory_wired_dirs: dict = {}
-        for arm in armories:
-            wired = set()
-            for lk in links:
-                if lk.destination is not arm and lk.source is not arm:
-                    continue
-                for cp in arm.connection_points:
-                    if cp in lk.path:
-                        offset = (cp[0] - arm.x, cp[1] - arm.y)
-                        d = TIP_TO_DIR.get(offset)
-                        if d:
-                            wired.add(d)
-                        break
-            armory_wired_dirs[arm] = wired
-            arm._wired_dirs = wired
-
         # --- Credit armory energy from inbound pulses ---
         # Done early so the player's scout gets first dibs on energy
         # before the auto-spawn rotation consumes it.
@@ -723,13 +723,15 @@ def demo(display) -> None:
                 # vent immediately on subsequent overflow ticks (above).
 
         # --- Agent steering and auto-launch ---
-        # Three states per player (while in agent mode):
-        #   waiting     — scout just finished; no new controllable scout
-        #                 until E is pressed.  The armory's rotational
-        #                 auto-spawn continues using saved paths.
-        #   armed       — E pressed, no scout; held keys aim preview,
-        #                 auto-launches a controllable scout when charged.
-        #   controlling — armed, scout alive; held keys steer it.
+        # States per player (while in agent mode), mirroring wire mode:
+        #   waiting     — entered agent mode, dim bip on a free tip.
+        #                 First direction press aims, second press of the
+        #                 same direction primes.
+        #   aimed       — direction pressed once, bip on chosen tip at
+        #                 medium brightness.  Not yet able to spawn.
+        #   primed      — same direction pressed twice, bright bip.
+        #                 Auto-launches a scout when charged.
+        #   controlling — scout alive; held keys steer it.
         for i, arm in enumerate(armories):
             if player_mode[i] != 'agent':
                 continue
@@ -742,26 +744,38 @@ def demo(display) -> None:
                 elif held[left]:  held_dir = (-1,  0)
                 elif held[right]: held_dir = ( 1,  0)
 
+            # Fresh direction keypresses for aiming / priming
+            press_dir = None
+            if   up in keys_pressed:    press_dir = ( 0, -1)
+            elif down in keys_pressed:  press_dir = ( 0,  1)
+            elif left in keys_pressed:  press_dir = (-1,  0)
+            elif right in keys_pressed: press_dir = ( 1,  0)
+
+            wired = armory_wired_dirs[arm]
+            # Ignore presses on wired tips
+            if press_dir is not None and press_dir in wired:
+                press_dir = None
+
             pa = player_agent[i]
             if pa is not None and pa.alive:
                 # --- Controlling: steer the scout ---
                 if held_dir is not None:
                     pa.steer(held_dir)
             elif player_armed[i]:
-                # --- Armed: aim preview, auto-launch when charged ---
-                # Wait for the player to press a direction first (even
-                # though armed is True from the mode switch).
-                wired = armory_wired_dirs[arm]
-                if held_dir is not None and held_dir not in wired:
-                    player_preview_dir[i] = held_dir
-                    player_aimed[i] = True
+                # --- Primed: launch when charged ---
+                if press_dir is not None:
+                    # Change aim (back to aimed state)
+                    if player_preview_dir[i] != press_dir:
+                        player_preview_dir[i] = press_dir
+                        player_armed[i] = False
+                        player_aimed[i] = True
+                    # Same direction pressed again while primed = stays primed
 
                 want_dir = player_preview_dir[i]
-                if want_dir in wired or want_dir == (0, 0):
+                if want_dir in wired:
                     want_dir = next((d for d in SPAWN_DIRS if d not in wired), None)
 
-                if (player_aimed[i] and want_dir is not None
-                        and arm.can_spawn() and want_dir not in wired):
+                if want_dir is not None and arm.can_spawn() and want_dir not in wired:
                     arm.consume_spawn()
                     arm.trigger_spawn_flash()
                     display.push_sound("spawn")
@@ -774,11 +788,19 @@ def demo(display) -> None:
                     pa._cooldown = DirectedAgent.STEP_TICKS
                     player_agent[i] = pa
                     directed.append(pa)
+            elif player_aimed[i]:
+                # --- Aimed: second press of same direction primes ---
+                if press_dir is not None:
+                    if player_preview_dir[i] == press_dir:
+                        player_armed[i] = True
+                        display.push_sound("toggle")
+                    else:
+                        player_preview_dir[i] = press_dir
             else:
-                # --- Waiting: aim preview only, no launch ---
-                wired = armory_wired_dirs[arm]
-                if held_dir is not None and held_dir not in wired:
-                    player_preview_dir[i] = held_dir
+                # --- Waiting: first press aims ---
+                if press_dir is not None:
+                    player_preview_dir[i] = press_dir
+                    player_aimed[i] = True
 
         # --- CPU energy buffering ---
         # Inbound battery→CPU links: count newly arrived pulses and credit the base.
@@ -857,6 +879,7 @@ def demo(display) -> None:
                     if player_agent[i] is da:
                         player_agent[i] = None
                         player_armed[i] = False
+                        player_aimed[i] = False
 
         # Collisions between directed agents
         check_collisions(directed)
@@ -909,6 +932,7 @@ def demo(display) -> None:
             if player_agent[i] is not None and not player_agent[i].alive:
                 player_agent[i] = None
                 player_armed[i] = False
+                player_aimed[i] = False
 
         # --- Draw ---
         display.clear()
@@ -1002,20 +1026,28 @@ def demo(display) -> None:
                 if d in wired:
                     continue
                 display.set_pixel(*cp, ac)
-        # Draw agent bip on an armory tip (always visible in agent mode
-        # when no scout is alive).  Unprimed (waiting) = slow dim blink.
-        # Primed (armed, user aiming) = fast bright blink with white tint.
+        # Draw agent bip on a free armory tip (always visible in agent mode
+        # when no scout is alive).  Three states:
+        #   waiting = slow dim blink (no direction pressed yet)
+        #   aimed   = medium blink (direction pressed once)
+        #   primed  = fast bright blink + white tint (same direction twice)
         for i, arm in enumerate(armories):
             if player_mode[i] != 'agent':
                 continue
             pa = player_agent[i]
             if pa is not None and pa.alive:
                 continue
-            tip = DIR_TIP[player_preview_dir[i]]
+            wired = armory_wired_dirs.get(arm, set())
+            d = player_preview_dir[i]
+            if d in wired:
+                d = next((dd for dd in SPAWN_DIRS if dd not in wired), None)
+                if d is None:
+                    continue
+            tip = DIR_TIP[d]
             px, py = arm.x + tip[0], arm.y + tip[1]
             c = bases[i].color
             if player_armed[i]:
-                # Primed (armed): fast blink + white tint
+                # Primed: fast blink + white tint
                 blink = (tick // 3) % 2 == 0
                 bright = 1.0 if blink else 0.4
                 c = Color(
@@ -1023,8 +1055,13 @@ def demo(display) -> None:
                     min(255, int(c.g * bright + 60)),
                     min(255, int(c.b * bright + 60)),
                 )
+            elif player_aimed[i]:
+                # Aimed: medium blink
+                blink = (tick // 5) % 2 == 0
+                bright = 0.7 if blink else 0.2
+                c = Color(int(c.r * bright), int(c.g * bright), int(c.b * bright))
             else:
-                # Unprimed (waiting): slow blink, dim
+                # Waiting: slow dim blink
                 blink = (tick // 8) % 2 == 0
                 bright = 0.5 if blink else 0.1
                 c = Color(int(c.r * bright), int(c.g * bright), int(c.b * bright))

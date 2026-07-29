@@ -350,10 +350,16 @@ class Armory:
         self.energy = max(0, self.energy - self.SPAWN_COST)
 
     FLASH_DURATION = 12   # ticks for the spawn flash
+    DISSIPATION_DURATION = 14   # ticks for the energy-venting puff
 
     def trigger_spawn_flash(self) -> None:
         """Start a brief full-bright flash to signal a spawn event."""
         self._flash_ticks = self.FLASH_DURATION
+
+    def trigger_dissipation(self) -> None:
+        """Start a venting puff to signal energy dissipating because the
+        armory is full but has no usable output path."""
+        self._dissipation_ticks = self.DISSIPATION_DURATION
 
     def draw(self, display: Display, tick: int) -> None:
         flash = getattr(self, '_flash_ticks', 0)
@@ -365,6 +371,31 @@ class Armory:
             for dx, dy in self._SHELL:
                 display.set_pixel(self.x + dx, self.y + dy, _dim(self.color, brightness))
             display.set_pixel(self.x, self.y, _dim(self.color, brightness))
+            return
+
+        diss = getattr(self, '_dissipation_ticks', 0)
+        if diss > 0:
+            self._dissipation_ticks = diss - 1
+            # Venting puff: shell pixels glow dim white-grey, radiating
+            # outward from centre and fading over the duration.
+            frac = diss / self.DISSIPATION_DURATION     # 1.0 → 0.0
+            vent = Color(120, 120, 130)
+            # Centre brightens then fades
+            c_bright = 0.5 * frac
+            display.set_pixel(self.x, self.y, _dim(vent, c_bright))
+            # Shell: outer pixels brighter early, inner later (radiating out)
+            for dx, dy in self._SHELL:
+                dist = abs(dx) + abs(dy)            # 1 or 2
+                # outer pixels (dist 2) lead the wave, inner (dist 1) lag
+                wave = max(0.0, frac - (0.0 if dist == 2 else 0.25))
+                display.set_pixel(self.x + dx, self.y + dy,
+                                  _dim(vent, 0.45 * wave))
+            # Brief sparks 1px beyond the tips during the first half
+            if frac > 0.5:
+                spark_b = 0.35 * (frac - 0.5) * 2.0
+                for tdx, tdy in self._TIPS:
+                    display.set_pixel(self.x + tdx, self.y + tdy,
+                                      _dim(vent, spark_b))
             return
 
         # Shell pixels: light up one pip per credit, cap at SPAWN_COST.

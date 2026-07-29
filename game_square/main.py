@@ -682,9 +682,32 @@ def demo(display) -> None:
         # --- Credit armory energy from inbound pulses ---
         # Done early so the player's scout gets first dibs on energy
         # before the auto-spawn rotation consumes it.
-        for lk in links:
-            if isinstance(lk.destination, Armory) and lk.powered:
-                lk.destination.energy += lk.check_arrivals(tick)
+        # Energy is capped at SPAWN_COST (one agent worth); excess is
+        # discarded.  If the armory is full with no usable output paths
+        # and the player isn't armed, the excess vents with a puff.
+        for i, arm in enumerate(armories):
+            arrivals = 0
+            for lk in links:
+                if isinstance(lk.destination, Armory) and lk.destination is arm and lk.powered:
+                    arrivals += lk.check_arrivals(tick)
+            if arrivals == 0:
+                continue
+            if arm.energy >= arm.SPAWN_COST:
+                # Already full — check whether anyone can consume
+                paths = armory_attack_paths.get(arm, {})
+                wired = armory_wired_dirs.get(arm, set())
+                has_path = any(
+                    d not in wired and paths.get(d)
+                    for d in SPAWN_DIRS
+                )
+                if not has_path and not player_armed[i]:
+                    arm.trigger_dissipation()
+                    display.push_sound("dissipate")
+                # Energy stays at cap; excess discarded
+            else:
+                arm.energy = min(arm.SPAWN_COST, arm.energy + arrivals)
+                # If this credit pushed us to full but nobody can use it,
+                # vent immediately on subsequent overflow ticks (above).
 
         # --- Agent steering and auto-launch ---
         # Three states per player (while in agent mode):

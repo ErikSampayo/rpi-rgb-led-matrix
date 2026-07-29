@@ -934,23 +934,26 @@ def demo(display) -> None:
 
         # Highlight valid destination connection points while a wire is
         # being built: free batteries and the builder's own armory tips
-        # that aren't already wired.  Blinks in the builder's colour.
+        # that aren't already wired.  Subtle dim pulse in the builder's
+        # colour; batteries and armories pulse at different intervals so
+        # they don't strobe in unison.
         for i, wb in enumerate(wire_builders):
             if not wb.active:
                 continue
             c = bases[i].color
-            blink = (tick // 5) % 2 == 0
-            bright = 0.9 if blink else 0.3
-            hc = Color(int(c.r * bright), int(c.g * bright), int(c.b * bright))
-            # Free batteries
+            # Batteries: slow gentle pulse
+            b_pulse = 0.25 + 0.15 * (0.5 + 0.5 * math.sin(tick * 0.12))
+            bc = Color(int(c.r * b_pulse), int(c.g * b_pulse), int(c.b * b_pulse))
             for node in nodes:
                 has_link = any(
                     lk.source is node or lk.destination is node
                     for lk in links
                 )
                 if not has_link:
-                    display.set_pixel(*node.connection_point, hc)
-            # Own armory tips that aren't already wired
+                    display.set_pixel(*node.connection_point, bc)
+            # Own armory tips: slightly faster, different phase
+            a_pulse = 0.25 + 0.15 * (0.5 + 0.5 * math.sin(tick * 0.18 + 1.2))
+            ac = Color(int(c.r * a_pulse), int(c.g * a_pulse), int(c.b * a_pulse))
             arm = armories[i]
             wired = armory_wired_dirs.get(arm, set())
             for cp in arm.connection_points:
@@ -958,7 +961,7 @@ def demo(display) -> None:
                 d = TIP_TO_DIR.get(offset)
                 if d in wired:
                     continue
-                display.set_pixel(*cp, hc)
+                display.set_pixel(*cp, ac)
         # Draw agent bip on an armory tip (always visible in agent mode
         # when no scout is alive).  Unprimed (waiting) = slow dim blink.
         # Primed (armed, user aiming) = fast bright blink with white tint.

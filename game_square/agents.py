@@ -130,9 +130,16 @@ class Agent:
         dx //= length
         dy //= length
         self._dir = (dx, dy)
-        # Battery is one step ahead
-        bx, by = hx + dx, hy + dy
-        battery = battery_pixel_map.get((bx, by))
+        # Battery is one step ahead — but the path direction may not
+        # point at the battery if the scout turned just before reaching
+        # it.  Search all 4 neighbours as a fallback.
+        battery = battery_pixel_map.get((hx + dx, hy + dy))
+        if battery is None:
+            for ox, oy in ((0, -1), (0, 1), (-1, 0), (1, 0)):
+                battery = battery_pixel_map.get((hx + ox, hy + oy))
+                if battery is not None:
+                    self._dir = (ox, oy)
+                    break
         if battery is None:
             return False
         self._contest_battery = battery

@@ -647,10 +647,12 @@ def demo(display) -> None:
                         wb.active = False
                         wb.path = []
                     elif result == 'hit_wire':
+                        display.push_sound("wire_crash")
                         display.push_sound(f"wire_end_{i}")
                         wb.active = False
                         wb.path = []
                     elif result in ('hit_node', 'out_of_bounds'):
+                        display.push_sound("wire_crash")
                         display.push_sound(f"wire_end_{i}")
                         wb.active = False
                         wb.path = []

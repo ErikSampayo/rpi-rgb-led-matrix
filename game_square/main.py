@@ -500,6 +500,10 @@ def demo(display) -> None:
     # to spawn or steering one.  False (waiting) after the scout finishes —
     # the armory's rotational auto-spawn handles output until E is pressed.
     player_armed = [False, False]
+    # Aimed: True once the player has pressed a direction key while armed.
+    # Prevents auto-spawn the moment agent mode is entered — the player
+    # must choose a direction first (even though armed is already True).
+    player_aimed = [False, False]
 
     # Tip offset for each direction
     DIR_TIP: dict[tuple[int,int], tuple[int,int]] = {
@@ -537,6 +541,7 @@ def demo(display) -> None:
                 # the current scout puts it on auto-pilot.
                 player_mode[i] = 'agent'
                 player_armed[i] = True
+                player_aimed[i] = False
                 if wire_builders[i].active:
                     wire_builders[i].active = False
                     wire_builders[i].path = []
@@ -737,15 +742,19 @@ def demo(display) -> None:
                     pa.steer(held_dir)
             elif player_armed[i]:
                 # --- Armed: aim preview, auto-launch when charged ---
+                # Wait for the player to press a direction first (even
+                # though armed is True from the mode switch).
                 wired = armory_wired_dirs[arm]
                 if held_dir is not None and held_dir not in wired:
                     player_preview_dir[i] = held_dir
+                    player_aimed[i] = True
 
                 want_dir = player_preview_dir[i]
                 if want_dir in wired or want_dir == (0, 0):
                     want_dir = next((d for d in SPAWN_DIRS if d not in wired), None)
 
-                if want_dir is not None and arm.can_spawn() and want_dir not in wired:
+                if (player_aimed[i] and want_dir is not None
+                        and arm.can_spawn() and want_dir not in wired):
                     arm.consume_spawn()
                     arm.trigger_spawn_flash()
                     display.push_sound("spawn")

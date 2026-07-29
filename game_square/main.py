@@ -542,12 +542,21 @@ def demo(display) -> None:
                 player_agent[i] = None
                 display.push_sound("toggle")
             if k_link in keys_pressed:
-                player_mode[i] = 'link'
-                wire_primed[i] = False
-                display.push_sound("toggle")
-                if player_agent[i] and player_agent[i].alive:
-                    player_agent[i].derezz()
-                player_agent[i] = None
+                if player_mode[i] == 'link':
+                    if not wire_builders[i].active:
+                        # Already in link mode — alternate the pin on the
+                        # current side
+                        d = wire_preview_dir[i]
+                        wire_pin_idx[i][d] = (wire_pin_idx[i].get(d, 0) + 1) % 2
+                        display.push_sound("toggle")
+                else:
+                    # Enter link mode
+                    player_mode[i] = 'link'
+                    wire_primed[i] = False
+                    display.push_sound("toggle")
+                    if player_agent[i] and player_agent[i].alive:
+                        player_agent[i].derezz()
+                    player_agent[i] = None
 
         # --- Build pixel sets for DirectedAgent collision ---
         link_px_set: set[tuple[int,int]] = set()

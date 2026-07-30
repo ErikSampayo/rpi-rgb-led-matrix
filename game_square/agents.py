@@ -417,14 +417,14 @@ class DirectedAgent:
             if not (0 <= nx < 64 and 0 <= ny < 64):
                 self.alive = False
                 return
-            if (nx, ny) in link_pixels or (nx, ny) in node_pixels:
-                self.alive = False
-                return
             if (nx, ny) in battery_pixel_map:
                 # Reached a battery — stay here and start contesting
                 if not self._enter_contest(battery_pixel_map[(nx, ny)], contesting_agents):
                     if not self.bounced:
                         self.alive = False
+                return
+            if (nx, ny) in link_pixels or (nx, ny) in node_pixels:
+                self.alive = False
                 return
 
             self._trail.append((self.x, self.y))

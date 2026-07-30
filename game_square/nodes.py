@@ -232,13 +232,14 @@ class PlayerBase:
         ( 4, -1), ( 4,  1),
     )
     _CENTER = (0, 0)
+    ENERGY_CAP = 10   # hard cap on stored energy
 
     def __init__(self, x: int, y: int, player: int):
         """player: 0-indexed player number"""
         self.x = x
         self.y = y
         self.color = PLAYER_COLORS[player % len(PLAYER_COLORS)]
-        self.energy: int = 0   # energy credits received from inbound battery links
+        self.energy: float = self.ENERGY_CAP // 2   # start at half capacity
 
     @property
     def connection_points(self) -> list[tuple[int, int]]:
@@ -272,15 +273,14 @@ class PlayerBase:
 
         # Energy visualised by lighting up frame pixels.
         # The 16 frame pixels fill clockwise from top-left as energy rises.
-        # Full bar = 10 credits.
-        ENERGY_CAP = 10
+        # Full bar = ENERGY_CAP.
         FRAME_CLOCKWISE = (
             (-2,-2),(-1,-2),(0,-2),(1,-2),(2,-2),   # top L→R
             (2,-1),(2,0),(2,1),                      # right T→B
             (2,2),(1,2),(0,2),(-1,2),(-2,2),         # bottom R→L
             (-2,1),(-2,0),(-2,-1),                   # left B→T
         )
-        lit = round(min(self.energy, ENERGY_CAP) / ENERGY_CAP * len(FRAME_CLOCKWISE))
+        lit = round(min(self.energy, self.ENERGY_CAP) / self.ENERGY_CAP * len(FRAME_CLOCKWISE))
         for i, (dx, dy) in enumerate(FRAME_CLOCKWISE):
             if i < lit:
                 display.set_pixel(self.x + dx, self.y + dy, _dim(self.color, 0.85))

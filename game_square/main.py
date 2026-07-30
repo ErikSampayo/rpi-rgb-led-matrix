@@ -40,6 +40,7 @@ PLAYER_KEYS = [
 ]
 
 WIRE_STEP_TICKS = 3   # ticks between each pixel step while key held
+WIRE_COST_PER_PIXEL = 0.2   # energy cost per pixel of wire (1 energy / 5px)
 
 
 class WireBuilder:
@@ -59,6 +60,7 @@ class WireBuilder:
         self.active = False         # True while growing
         self._cooldown = 0          # ticks until next step allowed
         self.direction: tuple[int,int] = (0, 0)  # current heading (snake-style)
+        self.energy_spent: float = 0.0   # energy spent on current wire build
 
     def _node_pixels(self, connectables) -> set[tuple[int,int]]:
         """All pixels occupied by any node body (used for collision, excludes connection points)."""
@@ -114,6 +116,7 @@ class WireBuilder:
         self.active = True
         self._cooldown = 0
         self.direction = direction
+        self.energy_spent = WIRE_COST_PER_PIXEL   # first pixel costs too
         return True
 
     def step(self, direction: tuple[int,int], links: list, connectables) -> str:
@@ -639,12 +642,17 @@ def demo(display) -> None:
 
                 if press_dir is not None:
                     if wire_primed[i] and wire_preview_dir[i] == press_dir:
-                        # Second press — start the wire
-                        pidx = wire_pin_idx[i].get(press_dir, 0)
-                        if wb.start(press_dir, links, pidx):
-                            wire_pin_idx[i][press_dir] = (pidx + 1) % 2
-                            display.push_sound(f"wire_start_{i}")
-                        wire_primed[i] = False
+                        # Second press — start the wire (if energy allows)
+                        if bases[i].energy < WIRE_COST_PER_PIXEL:
+                            display.push_sound("wire_crash")
+                            wire_primed[i] = False
+                        else:
+                            pidx = wire_pin_idx[i].get(press_dir, 0)
+                            if wb.start(press_dir, links, pidx):
+                                bases[i].energy -= WIRE_COST_PER_PIXEL
+                                wire_pin_idx[i][press_dir] = (pidx + 1) % 2
+                                display.push_sound(f"wire_start_{i}")
+                            wire_primed[i] = False
                     else:
                         # First press or different direction — set preview
                         wire_preview_dir[i] = press_dir
@@ -665,29 +673,46 @@ def demo(display) -> None:
                         wb.direction = new_dir
 
                 if wb._cooldown <= 0:
-                    result = wb.step(wb.direction, links, connectables)
-                    if result == 'connected':
-                        new_link = wb.commit(connectables, links, tick)
-                        if new_link:
-                            links.append(new_link)
-                            _update_power(links, tick)
-                            display.push_sound("connect")
-                        display.push_sound(f"wire_end_{i}")
-                        wb.active = False
-                        wb.path = []
-                    elif result == 'hit_wire':
+                    # Check energy before stepping
+                    if bases[i].energy < WIRE_COST_PER_PIXEL:
+                        # Depleted — wire dies, recover half
+                        bases[i].energy += wb.energy_spent * 0.5
+                        bases[i].energy = min(bases[i].energy, bases[i].ENERGY_CAP)
                         display.push_sound("wire_crash")
                         display.push_sound(f"wire_end_{i}")
                         wb.active = False
                         wb.path = []
-                    elif result in ('hit_node', 'out_of_bounds'):
-                        display.push_sound("wire_crash")
-                        display.push_sound(f"wire_end_{i}")
-                        wb.active = False
-                        wb.path = []
-                    else:   # 'ok'
-                        display.push_sound(f"wire_step_{i}")
-                        wb._cooldown = WIRE_STEP_TICKS
+                    else:
+                        result = wb.step(wb.direction, links, connectables)
+                        if result == 'connected':
+                            new_link = wb.commit(connectables, links, tick)
+                            if new_link:
+                                links.append(new_link)
+                                _update_power(links, tick)
+                                display.push_sound("connect")
+                            display.push_sound(f"wire_end_{i}")
+                            wb.active = False
+                            wb.path = []
+                        elif result == 'hit_wire':
+                            # Wire destroyed — recover half spent energy
+                            bases[i].energy += wb.energy_spent * 0.5
+                            bases[i].energy = min(bases[i].energy, bases[i].ENERGY_CAP)
+                            display.push_sound("wire_crash")
+                            display.push_sound(f"wire_end_{i}")
+                            wb.active = False
+                            wb.path = []
+                        elif result in ('hit_node', 'out_of_bounds'):
+                            bases[i].energy += wb.energy_spent * 0.5
+                            bases[i].energy = min(bases[i].energy, bases[i].ENERGY_CAP)
+                            display.push_sound("wire_crash")
+                            display.push_sound(f"wire_end_{i}")
+                            wb.active = False
+                            wb.path = []
+                        else:   # 'ok'
+                            bases[i].energy -= WIRE_COST_PER_PIXEL
+                            wb.energy_spent += WIRE_COST_PER_PIXEL
+                            display.push_sound(f"wire_step_{i}")
+                            wb._cooldown = WIRE_STEP_TICKS
 
             if wb._cooldown > 0:
                 wb._cooldown -= 1
@@ -806,7 +831,10 @@ def demo(display) -> None:
         # Inbound battery→CPU links: count newly arrived pulses and credit the base.
         for lk in links:
             if isinstance(lk.destination, PlayerBase) and lk.powered:
-                lk.destination.energy += lk.check_arrivals(tick)
+                lk.destination.energy = min(
+                    lk.destination.ENERGY_CAP,
+                    lk.destination.energy + lk.check_arrivals(tick),
+                )
         # Outbound CPU→* gated links: spend one energy credit per link,
         # but only once per PULSE_SPACING ticks so the rate matches inbound.
         for base in bases:

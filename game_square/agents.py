@@ -392,6 +392,7 @@ class DirectedAgent:
         self._osc_dir    = 1
         self._osc_cd     = self.OSC_TICKS
         self._shot_cd    = self.SHOT_COOLDOWN // 2   # first shot comes quickly
+        return True
 
     def update(self, link_pixels: set, node_pixels: set,
                battery_pixel_map: dict | None = None,
